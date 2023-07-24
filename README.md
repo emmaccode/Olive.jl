@@ -1,31 +1,30 @@
 <div align = "center">
 <img src="https://github.com/ChifiSource/image_dump/blob/main/olive/newoliveover.png" width="350">
-<h6>| 0.0.8 |</h6>
+<h6>| 0.0.9 |</h6>
 </div>
 
 #### welcome to olive
-Olive.jl is a customizable Integrated Development Environment for Julia programming in a notebook-like environment. Executable blocks of code are surrounded by Markdown in a far more reproducible form than ever before. Olive features
+Olive.jl is an Extensible Notebook Integrated Development Environment (ENIDE) written in the Julia programming language. Olive notebooks feature markdown and more 
 - Extensibility
 - Deployability
-- Customization
+- Endless Customization
+- Regular Julia Files
+- 
 
+Keep in mind this version of Olive (while functional) is still a **work in progress** build. Thank you for reporting bugs to the issues page!
 ###### map
+- [olive?](#olive?)
 - [get started](#get-started)
 - [basic olive](#basic-olive)
-    - setup
-    - basics
 - [extending olive](#extending-olive)
-    - building extensions
 - [deploying olive](#deploying-olive)
-    - `0.0.8` deployment status
 - [contributing](#contributing)
-    - how to contribute
-    - issues
 - [tech stack](#tech-stack)
-    - toolips
-    - other
 
 <img src="https://github.com/ChifiSource/image_dump/blob/main/olive/olsc/thethetherthgfhtrj.png"></img>
+
+
+### olive?
 
 ### get started
 Getting started with Olive starts by installing this package via Pkg. **Press ] to enter your pkg REPL**.
@@ -51,9 +50,10 @@ This should provide you with a link to get started with Olive!
 <img src="https://github.com/ChifiSource/image_dump/blob/main/olive/olsc/jtyjtyjtyjdfdjdhgj.png?raw=true"></img>
 
 ### basic olive
-When first starting Olive, you will arrive at the `setup` route. This screen will ask you to select a home directory. After picking your directory, press `confirm` and you will be greeted with the second portion of setup which will ask you for your name and if you would like to add OliveDefaults. Respond -- you'll definitely want to pick your username! OliveDefaults is an entirely optional extension that will get added -- not loaded -- to your Olive Pkg environment. After confirming, your `olive` home directory will be setup. This home directory is important because it is used in order to extend Olive. After the setup completes, you will automatically be redirected to your new Olive homepage, also known as `explorer` at route `/`. This page requires a key to enter. The directories here will be your olive home and working directories. The home directory will contain a `Project.toml` file with your Olive data, as well as a module source file for a module called `olive`. 
+When first starting Olive, you will arrive at the `setup` route. This screen will ask you to select a home directory. After picking your directory, press `confirm` and you will be greeted with the second portion of setup which will ask you for your name and if you would like to add OliveDefaults. Respond -- you'll definitely want to pick your username! OliveDefaults is an entirely optional extension that will get added -- not loaded -- to your Olive Pkg environment. After confirming, your `olive` home directory will be setup. This home directory is important because it is used in order to extend Olive. After the setup completes, you will automatically be redirected to your new Olive homepage! This page requires a key to enter. The directories here will be your olive home and working directories. Files can be opened by clicking the menu in the top left.
 
-<img src="https://github.com/ChifiSource/image_dump/blob/main/olive/olsc/rtjrjrtjrhjgjhjytuj.png"></img>
+
+**TODO** explorer image here.
 
 This is where extensions and changes can be written on top of olive from the outside in. Double clicking a file in the directory will yield a loading of the `/session` route. This route contains the actual editor, as well as the project explorer. The project explorer can be opened by clicking the top left. Client settings can be altered by clicking the top right settings icon. These settings are saved whenever the settings menu is closed.
 ##### cells 
@@ -112,7 +112,8 @@ I thank you for all of your help with our project, or just for considering contr
 When submitting issues for Olive, it is important to make sure of a few things.
 1. You have replicated the issue on `Olive#Unstable`
 2. The issue does not currently exist.
-3. This is an issue with Olive, not a dependency; if there is a problem with highlighting, please report that issue to [ToolipsMarkdown](https://github.com/ChifiSource/ToolipsMarkdown.jl). If there is an issue with Cell reading/writing, report that issue to [IPyCells](https://github.com/ChifiSource/IPyCells.jl)
+3. **Pull Request TO UNSTABLE**
+4. This is an issue with Olive, not a dependency; if there is a problem with highlighting, please report that issue to [ToolipsMarkdown](https://github.com/ChifiSource/ToolipsMarkdown.jl). If there is an issue with Cell reading/writing, report that issue to [IPyCells](https://github.com/ChifiSource/IPyCells.jl)
 ### tech stack
 I appreciate those who are interested to take some time to look into the tech-stack used to create this project. I created a lot of these, and it took a lot of time.
 

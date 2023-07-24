@@ -231,6 +231,56 @@ function settings_menu(c::Connection)
     "overflow-y" => "scroll", "padding" => 0px)
     mainmenu::Component{:section}
 end
+
+function work_menu(c::Connection)
+    becell = "workmenu"
+    env::Environment = c[:OliveCore].open[getname(c)]
+    working_area = section(becell)
+    open_heading = h("open$becell", 2, text = "open")
+    pinfo_box = div("pinfo$becell")
+    pinfo_box[:children] = Vector{Servable}(
+    [work_preview(c, p) for p in env.projects]
+    )
+    dinfo_box = div("dinfo$becell")
+    dinfo_box[:children] = Vector{Servable}(
+    [work_preview(c, d) for d in env.directories]
+    )
+    push!(working_area, open_heading, pinfo_box, dinfo_box)
+    working_area
+end
+
+function work_preview(c::Connection, p::Project{<:Any})
+    name = p.id
+    preview = div("preview$name")
+    style!(preview, "display" => "inline-block", "border-radius" => 0px)
+    name_label = a("label$name", text = p.name)
+    style!(name_label, "color" => "#A2646F", "display" => "inline-block")
+    savebutton = topbar_icon("save$name", "save")
+    style!(savebutton, "font-size"  => 20pt, "color" => "gray", 
+    "display" => "inline-block")
+    on(c, savebutton, "click") do cm::ComponentModifier
+        save_project(c, cm, p)
+    end
+    saveasbutton = topbar_icon("saveas$name", "save_as")
+    style!(saveasbutton, "font-size"  => 20pt, "color" => "gray", 
+    "display" => "inline-block")
+    on(c, saveasbutton, "click") do cm::ComponentModifier
+        save_project(c, cm, p)
+    end
+    push!(preview, name_label, br(), savebutton, saveasbutton)
+    preview::Component{:div}
+end
+
+function work_preview(c::Connection, d::Directory{<:Any})
+    becell = replace(d.uri, "/" => "|")
+    preview = div("preview$becell", text = d.uri)
+    style!(preview, "background-color" => "#A2646F", "color" => "white", "font-weight" => "bold")
+    on(c, preview, "click") do cm::ComponentModifier
+
+    end
+    preview::Component{:div}
+end
+
 #==output[code]
 UndefVarError: Connection not defined
 ==#
@@ -332,155 +382,177 @@ UndefVarError: Connection not defined
 ==#
 #==|||==#
 
-function olive_main(selected::String = "project")
-    main = div("olivemain", cell = 1,  selected = selected, ex = 0)
-    style!(main, "transition" => ".8s", "overflow"  =>  "scroll")
+function olive_main()
+    main = div("olivemain", ex = 0)
+    style!(main, "transition" => ".8s", "overflow"  =>  "scroll", "padding" => 2px)
     main::Component{:div}
 end
 #==output[code]
 olive_main (generic function with 2 methods)
 ==#
 #==|||==#
-
-"""
-**load_session(c::Connection, cs::Vector{Cell{<:Any}}, cm::ComponentModifier,
-source::String, fpath::String, d::Directory{<:Any})**
-
-------------------
-Loads an  olive session, pushes a project into directories. The `catchall` for
-all directories...
-#### example
-```
-
-```
-"""
-function load_session(c::Connection, cs::Vector{Cell{<:Any}},
-    cm::ComponentModifier, source::String, fpath::String, d::Directory{<:Any})
-    direc = d.uri
-    myproj = Project{:olive}("hello", "ExampleProject")
-    fsplit = split(fpath, "/")
-    if typeof(d) == Directory{:subdir}
-        d = Directory(d.access["toplevel"], "all" =>  "rw")
-    end
-    uriabove = join(fsplit[1:length(fsplit) - 2])
-    if "Project.toml" in readdir(d.uri)
-        myproj.environment = d.uri
-    elseif "Project.toml" in readdir(uriabove)
-        myproj.environment = uriabove
-    else
-        myproj.environment = c[:OliveCore].data["home"]
-    end
-    push!(myproj.directories, d)
-    name = split(fsplit[length(fsplit)], ".")[1]
-    modname = name * replace(ToolipsSession.gen_ref(10),
+function source_module!(p::Project{<:Any}, name::String)
+    name = replace(ToolipsSession.gen_ref(10),
     [string(dig) => "" for dig in digits(1234567890)] ...)
-    modstr = olive_module(modname, myproj.environment)
-    mod::Module = eval(Meta.parse(modstr))
-    projdict = Dict{Symbol, Any}(:mod => mod, :cells => cs, :path => fpath)
-    push!(myproj.open, fsplit[length(fsplit)] =>  projdict)
-    c[:OliveCore].open[getname(c)] = myproj
-    redirect!(cm, "/session")
+    modstr = olive_module(name, p[:env])
+    mod::Module = Main.evalin(Meta.parse(modstr))
+    push!(p.data, :mod => mod)
 end
+
+function check!(p::Project{<:Any})
+
+end
+
 #==output[code]
 UndefVarError: Cell not defined 
 ==#
 #==|||==#
 
 function add_to_session(c::Connection, cs::Vector{Cell{<:Any}},
-    cm::ComponentModifier, source::String, fpath::String)
-    myproj = c[:OliveCore].open[getname(c)]
-    all_paths = [project[:path]  for project in values(myproj.open)]
+    cm::ComponentModifier, source::String, fpath::String;
+    type::String = "olive")
+    all_paths::Vector{String} = [begin
+        project[:path]
+    end for project in c[:OliveCore].open[getname(c)].projects]
     if fpath in all_paths
         olive_notify!(cm, "project already open!", color = "red")
         return
     end
-    d = myproj.directories[1]
-    if "Project.toml" in readdir(d.uri)
-        myproj.environment = d.uri
+    fsplit::Vector{SubString} = split(fpath, "/")
+    uriabove::String = join(fsplit[1:length(fsplit) - 1], "/")
+    environment::String = ""
+    if "Project.toml" in readdir(uriabove)
+        environment = uriabove
     else
-        myproj.environment = c[:OliveCore].data["home"]
+        environment = c[:OliveCore].data["home"]
     end
-    fsplit = split(fpath, "/")
-    name = split(fsplit[length(fsplit)], ".")[1]
-    modname = name * replace(ToolipsSession.gen_ref(10),
-    [string(dig) => "" for dig in digits(1234567890)] ...)
-    modstr = olive_module(modname, myproj.environment)
-    filepath_name::String = fsplit[length(fsplit)]
-    mod::Module = eval(Meta.parse(modstr))
-    projdict = Dict{Symbol, Any}(:mod => mod, :cells => cs, :path => fpath)
-    push!(myproj.open, filepath_name =>  projdict)
-    projbuild = build(c, cm, myproj, at = filepath_name)
-    append!(cm, "olivemain", projbuild)
+    projdict::Dict{Symbol, Any} = Dict{Symbol, Any}(:cells => cs,
+    :path => fpath, :env => environment)
+    myproj::Project{<:Any} = Project{Symbol(type)}(source, projdict)
+    Base.invokelatest(c[:OliveCore].olmod.Olive.source_module!, myproj, source)
+    Base.invokelatest(c[:OliveCore].olmod.Olive.check!, myproj)
+    push!(c[:OliveCore].open[getname(c)].projects, myproj)
+    tab::Component{:div} = build_tab(c, myproj)
+    open_project(c, cm, myproj, tab)    
 end
+
+function open_project(c::Connection, cm::AbstractComponentModifier, proj::Project{<:Any}, tab::Component{:div})
+    projects = c[:OliveCore].open[getname(c)].projects
+    n_projects::Int64 = length(projects)
+    append!(cm, "pinfoworkmenu", work_preview(c, proj))
+    projbuild = build(c, cm, proj)
+    if(n_projects == 2)
+        style!(cm, "pane_container_two", "width" => 100percent, "opacity" => 100percent)
+        proj.data[:pane] = "two"
+        append!(cm, "pane_two", projbuild)
+        append!(cm, "pane_two_tabs", tab)
+        return
+    elseif(n_projects == 1)
+        proj.data[:pane] = "one"
+        append!(cm, "pane_one", projbuild)
+        append!(cm, "pane_one_tabs", tab)
+        return
+    end
+    if(cm["olivemain"]["pane"] == "1")
+        proj.data[:pane] = "one"
+        inpane = findall(p::Project{<:Any} -> p[:pane] == "one", projects)
+        [begin
+            if projects[p].id != proj.id 
+                style!(cm, """tab$(projects[p].id)""", "background-color" => "lightgray")
+            end
+        end  for p in inpane]
+        append!(cm, "pane_one_tabs", tab)
+        set_children!(cm, "pane_one", [projbuild])
+    else
+        proj.data[:pane] = "two"
+        inpane = findall(p::Project{<:Any} -> p[:pane] == "two", projects)
+        [begin
+            if projects[p].id != proj.id 
+                style!(cm, """tab$(projects[p].id)""", "background-color" => "lightgray")
+            end
+        end  for p in inpane]
+        append!(cm, "pane_two_tabs", tab)
+        set_children!(cm, "pane_two", [projbuild])
+    end
+end
+
 #==output[code]
 UndefVarError: Cell not defined 
 ==#
 #==|||==#
 
-function build_tab(c::Connection, fname::String)
+function close_project(c::Connection, cm2::ComponentModifier, proj::Project{<:Any})
+    name = proj.id
+    fname = replace(name, " " => "")
+    projs = c[:OliveCore].open[getname(c)].projects
+    n_projects::Int64 = length(projs)
+    nname = replace(name, " " => "")
+    remove!(cm2, "$nname")
+    remove!(cm2, "tab$(nname)")
+    remove!(cm2, "preview$(proj.id)")
+    if(n_projects == 1)
+        # TODO start screen here
+    elseif n_projects == 2
+        lastproj = findfirst(pre -> pre.id != proj.id, projs)
+        lastproj = projs[lastproj]
+        if(lastproj.data[:pane] == "two")
+            lpjn = lastproj.id
+            remove!(cm2, lpjn)
+            remove!(cm2, "tab$lpjn")
+            lastproj.data[:pane] = "one"
+            set_children!(cm2, "pane_one", Vector{Servable}([
+                Base.invokelatest(c[:OliveCore].olmod.build, c, cm2, lastproj
+            )]))
+            append!(cm2, "pane_one_tabs", build_tab(c, lastproj))
+        end
+        style!(cm2, "pane_container_two", "width" => 0percent, "opacity" => 0percent)  
+    end
+    pos = findfirst(pro -> pro.id == proj.id,
+    projs)
+    deleteat!(projs, pos)
+    olive_notify!(cm2, "project $(fname) closed", color = "blue")
+end
+
+function build_tab(c::Connection, p::Project{<:Any}; hidden::Bool = false)
+    name = p.id
+    fname = replace(name, " " => "")
     tabbody = div("tab$(fname)")
     style!(tabbody, "border-bottom-right-radius" => 0px,
     "border-bottom-left-radius" => 0px, "display" => "inline-block",
-    "border-width" => 2px, "border-color" => "lightblue",
+    "border-width" => 2px, "border-color" => "#333333", "border-bottom" => 0px,
     "border-style" => "solid", "margin-bottom" => "0px", "cursor" => "pointer",
-    "margin-left" => 10px)
-    tablabel = a("tablabel$(fname)", text = fname)
+    "margin-left" => 0px, "transition" => 1seconds)
+    if(hidden)
+        style!(tabbody, "background-color" => "gray")
+    end
+    tablabel = a("tablabel$(fname)", text = p.name)
     style!(tablabel, "font-weight" => "bold", "margin-right" => 5px,
-    "font-size"  => 13pt)
+    "font-size"  => 13pt, "color" => "#A2646F")
     push!(tabbody, tablabel)
     on(c, tabbody, "click") do cm::ComponentModifier
         if ~("$(fname)close" in keys(cm.rootc))
             closebutton = topbar_icon("$(fname)close", "close")
             on(c, closebutton, "click") do cm2::ComponentModifier
-                remove!(cm2, "$(fname)over")
-                delete!(c[:OliveCore].open[getname(c)].open, fname)
-                olive_notify!(cm2, "project $(fname) closed", color = "blue")
-            end
-            savebutton = topbar_icon("$(fname)save", "save")
-            on(c, savebutton, "click") do cm2::ComponentModifier
-                save_type = split(fname, ".")[2]
-                savepath = c[:OliveCore].open[getname(c)].open[fname][:path]
-                cells = c[:OliveCore].open[getname(c)].open[fname][:cells]
-                savecell = Cell(1, string(save_type), fname, savepath)
-                ret = olive_save(cells, savecell)
-                if isnothing(ret)
-                    olive_notify!(cm2, "file $(savepath) saved", color = "green")
-                else
-                    olive_notify!(cm2, "file $(savepath) saved", color = "$ret")
-                end
-            end
-            saveas_button = topbar_icon("$(fname)saveas", "save_as")
-            on(c, saveas_button, "click") do cm2::ComponentModifier
-
+                close_project(c, cm2, p)
             end
             restartbutton = topbar_icon("$(fname)restart", "restart_alt")
             on(c, restartbutton, "click") do cm2::ComponentModifier
-                new_name = split(fname, ".")[1]
-                myproj = c[:OliveCore].open[getname(c)]
-                modname = new_name * replace(ToolipsSession.gen_ref(10),
-                [string(dig) => "" for dig in digits(1234567890)] ...)
-                modstr = """module $(modname)
-                using Pkg
-
-                function evalin(ex::Any)
-                        Pkg.activate("$(myproj.environment)")
-                        ret = eval(ex)
-                end
-                end"""
-                mod::Module = eval(Meta.parse(modstr))
-                myproj.open[fname][:mod] = mod
+                new_name = string(split(fname, ".")[1])
+                myproj = c[:OliveCore].open[getname(c)][fname]
+                delete!(myproj.data, :mod)
+                source_module!(myproj, new_name)
                 olive_notify!(cm2, "module for $(fname) re-sourced")
             end
             add_button = topbar_icon("$(fname)add", "add_circle")
             on(c, add_button, "click") do cm2::ComponentModifier
-                cells = c[:OliveCore].open[getname(c)].open[fname][:cells]
+                cells = c[:OliveCore].open[getname(c)][fname][:cells]
                 new_cell = Cell(length(cells) + 1, "creator", "")
                 push!(cells, new_cell)
                 append!(cm2, fname, build(c, cm2, new_cell, cells, fname))
             end
             runall_button = topbar_icon("$(fname)run", "start")
             on(c, runall_button, "click") do cm2::ComponentModifier
-                cells = c[:OliveCore].open[getname(c)].open[fname][:cells]
+                cells = c[:OliveCore].open[getname(c)][fname][:cells]
                 [begin
                 try
                     evaluate(c, cm2, cell, cells, fname)
@@ -488,11 +560,23 @@ function build_tab(c::Connection, fname::String)
                 end
                 end for cell in cells]
             end
+            projects = c[:OliveCore].open[getname(c)].projects
+            inpane = findall(proj::Project{<:Any} -> proj[:pane] == p[:pane], projects)
+            [begin
+                if projects[e].id != p.id 
+                    style!(cm, """tab$(projects[e].id)""", "background-color" => "lightgray")
+                    newtablabel = a("tab$label", text = p.name)
+                    style!(newtablabel, "font-weight" => "bold", "margin-right" => 5px,
+                    "font-size"  => 13pt, "color" => "#A2646F")
+                    set_children!(cm, """tab$(projects[e].id)""", [newtablabel])
+                end
+            end  for e in inpane]
+            projbuild = build(c, cm, p)
+            set_children!(cm, "pane_$(p[:pane])", [projbuild])
+            style!(cm, tabbody, "background-color" => "white")
             decollapse_button = topbar_icon("$(fname)dec", "arrow_left")
             on(c, decollapse_button, "click") do cm2::ComponentModifier
-                remove!(cm2, savebutton)
                 remove!(cm2, closebutton)
-                remove!(cm2, saveas_button)
                 remove!(cm2, add_button)
                 remove!(cm2, runall_button)
                 remove!(cm2, restartbutton)
@@ -500,14 +584,10 @@ function build_tab(c::Connection, fname::String)
             end
             style!(closebutton, "font-size"  => 17pt, "color" => "red")
             style!(restartbutton, "font-size"  => 17pt, "color" => "gray")
-            style!(savebutton, "font-size"  => 17pt, "color" => "gray")
-            style!(saveas_button, "font-size"  => 17pt, "color" => "gray")
             style!(decollapse_button, "font-size"  => 17pt, "color" => "blue")
             style!(add_button, "font-size"  => 17pt, "color" => "gray")
             style!(runall_button, "font-size"  => 17pt, "color" => "gray")
             append!(cm, tabbody, decollapse_button)
-            append!(cm, tabbody, savebutton)
-            append!(cm, tabbody, saveas_button)
             append!(cm, tabbody, add_button)
             append!(cm, tabbody, restartbutton)
             append!(cm, tabbody, runall_button)
@@ -521,6 +601,41 @@ UndefVarError: ComponentModifier not defined
 ==#
 #==|||==#
 
+function save_project(c::Connection, cm2::ComponentModifier, p::Project{<:Any})
+    save_split = split(p.name, ".")
+    if length(save_split) < 2
+        save_type = "Any"
+    else
+        save_type = join(save_split[2:length(save_split)])
+    end
+    savepath = p[:path]
+    cells = p[:cells]
+    savecell = Cell(1, save_type, p.name, savepath)
+    ret = olive_save(cells, savecell)
+    if isnothing(ret)
+        olive_notify!(cm2, "file $(savepath) saved", color = "green")
+    else
+        olive_notify!(cm2, "file $(savepath) saved", color = "$ret")
+    end
+end
+
+function save_project(c::Connection, cm::ComponentModifier, p::Project{<:Any}, path::String)
+    save_split = split(p.name, ".")
+    if length(save_split) < 2
+        save_type = "Any"
+    else
+        save_type = join(save_split[2:length(save_split)])
+    end
+    p[:path] = path
+    cells = p[:cells]
+    savecell = Cell(1, save_type, fname, savepath)
+    ret = olive_save(cells, savecell)
+    if isnothing(ret)
+        olive_notify!(cm2, "file $(savepath) saved", color = "green")
+    else
+        olive_notify!(cm2, "file $(savepath) saved", color = "$ret")
+    end
+end
 function olive_loadicon()
     srcdir = @__DIR__
     iconb64 = read(srcdir * "/images/loadicon.png", String)

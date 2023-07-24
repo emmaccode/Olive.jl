@@ -10,7 +10,8 @@ This file creates the basis for Olive.jl cells then builds olive cell types
 """
 #==|||==#
 function cell_up!(c::Connection, cm2::ComponentModifier, cell::Cell{<:Any},
-    cells::Vector{Cell{<:Any}}, windowname::String)
+    cells::Vector{Cell{<:Any}}, proj::Project{<:Any})
+    windowname::String = proj.id
     pos = findall(lcell -> lcell.id == cell.id, cells)[1]
     if pos != 1
         switchcell = cells[pos - 1]
@@ -20,9 +21,9 @@ function cell_up!(c::Connection, cm2::ComponentModifier, cell::Cell{<:Any},
         remove!(cm2, "cellcontainer$(switchcell.id)")
         remove!(cm2, "cellcontainer$(cell.id)")
         ToolipsSession.insert!(cm2, windowname, pos - 1, build(c, cm2, switchcell, cells,
-        windowname))
+        proj))
         ToolipsSession.insert!(cm2, windowname, pos - 1, build(c, cm2, cell, cells,
-        windowname))
+        proj))
         focus!(cm2, "cell$(cell.id)")
     else
         olive_notify!(cm2, "this cell cannot go up any further!", color = "red")
@@ -33,7 +34,8 @@ inputcell_style (generic function with 1 method)
 ==#
 #==|||==#
 function cell_down!(c::Connection, cm::ComponentModifier, cell::Cell{<:Any},
-    cells::Vector{Cell{<:Any}}, windowname::String)
+    cells::Vector{Cell{<:Any}}, proj::Project{<:Any})
+    windowname::String = proj.id
     pos = findall(lcell -> lcell.id == cell.id, cells)[1]
     if pos != length(cells)
         switchcell = cells[pos + 1]
@@ -42,9 +44,9 @@ function cell_down!(c::Connection, cm::ComponentModifier, cell::Cell{<:Any},
         remove!(cm, "cellcontainer$(switchcell.id)")
         remove!(cm, "cellcontainer$(cell.id)")
         ToolipsSession.insert!(cm, windowname, pos, build(c, cm, switchcell, cells,
-        windowname))
+        proj))
         ToolipsSession.insert!(cm, windowname, pos + 1, build(c, cm, cell, cells,
-        windowname))
+        proj))
         focus!(cm, "cell$(cell.id)")
     else
         olive_notify!(cm, "this cell cannot go down any further!", color = "red")
@@ -64,12 +66,13 @@ inputcell_style (generic function with 1 method)
 ==#
 #==|||==#
 function cell_new!(c::Connection, cm::ComponentModifier, cell::Cell{<:Any},
-    cells::Vector{Cell{<:Any}}, windowname::String; type::String = "creator")
+    cells::Vector{Cell{<:Any}}, proj::Project{<:Any}; type::String = "creator")
+    windowname::String = proj.id
     pos = findfirst(lcell -> lcell.id == cell.id, cells)
     newcell = Cell(pos, type, "")
     insert!(cells, pos + 1, newcell)
     ToolipsSession.insert!(cm, windowname, pos + 1, build(c, cm, newcell,
-    cells, windowname))
+    cells, proj))
     focus!(cm, "cell$(newcell.id)")
     cm["cell$(newcell.id)"] = "contenteditable" => "true"
 end
@@ -77,6 +80,24 @@ end
 inputcell_style (generic function with 1 method)
 ==#
 #==|||==#
+function focus_up!(c::Connection, cm::ComponentModifier, cell::Cell{<:Any}, cells::Vector{Cell{<:Any}}, 
+    proj::Project{<:Any})
+    i::Int64 = findfirst(cel::Cell{<:Any} -> cel.id == cell.id, cells)
+    if i == 1 || isnothing(i)
+        return
+    end
+    focus!(cm, "cell$(cells[i - 1].id)")
+end
+
+function focus_down!(c::Connection, cm::ComponentModifier, cell::Cell{<:Any}, cells::Vector{Cell{<:Any}}, 
+    proj::Project{<:Any})
+    i::Int64 = findfirst(cel::Cell{<:Any} -> cel.id == cell.id, cells)
+    if i == length(cells) || isnothing(i)
+        return
+    end
+    focus!(cm, "cell$(cells[i + 1].id)")
+end
+
 function bind!(c::Connection, cell::Cell{<:Any}, d::Directory{<:Any};
     explorer::Bool = false)
 
@@ -163,7 +184,7 @@ function build_file_cell(e::Int64, path::String, dir::String)
         if length(fsplit) > 1
             fending = string(fsplit[2])
         end
-        Cell(e, fending, fname, dir * "/" * path)
+        Cell(e, fending, fname, replace(dir * "/" * path, "\\" => "/"))
     else
         Cell(e, "dir", path, dir)
     end
@@ -244,63 +265,35 @@ end
 inputcell_style (generic function with 1 method)
 ==#
 #==|||==#
-function dir_returner(c::Connection, cell::Cell{<:Any}, d::Directory{<:Any};
-    explorer::Bool = false)
-    returner = div("cell$(cell.id)", class = "cell-jl")
-    style!(returner, "background-color" => "red")
-    name = a("cell$(cell.id)label", text = "...")
-    style!(name, "color" => "white")
-    push!(returner, name)
-    on(c, returner, "dblclick") do cm2::ComponentModifier
-        newcells = directory_cells(d.uri)
-        n_dir::String = d.uri
-        built = [build(c, cel, d, explorer = explorer) for cel in newcells]
-        if typeof(d) == Directory{:subdir}
-            n_dir = d.access["toplevel"]
-            if n_dir != d.uri
-                newd = Directory(n_dir, "root" => "rw",
-                "toplevel" => d.access["toplevel"], dirtype = "subdir")
-                insert!(built, 1, dir_returner(c, cell, newd))
-            end
-        end
-        becell = replace(n_dir, "/" => "|")
-        nbcell = replace(d.uri, "/" => "|")
-        cm2["$(becell)cells"] = "sel" => nbcell
-        set_children!(cm2, "$(becell)cells",
-        Vector{Servable}(built))
-    end
-    returner::Component{:div}
-end
-#==output[code]
-inputcell_style (generic function with 1 method)
-==#
-#==|||==#
 function build(c::Connection, cell::Cell{:dir}, d::Directory{<:Any};
     explorer::Bool = false)
-    filecell = div("cell$(cell.id)", class = "cell-ipynb")
+    container = div("cellcontainer$(cell.id)")
+    filecell = div("cell$(cell.id)", class = "cell-ipynb", ex = 0)
+    childbox = div("child$(cell.id)")
+    style!(container, "padding" => 0px, "margin-bottom" => 0px)
+    expandarrow = topbar_icon("$(cell.id)expand", "expand_more")
+    style!(childbox, "opacity" => 0percent, "margin-left" => 7px, "border-width-left" => 1px, 
+    "border-color" => "darkblue", "height" => 0percent, 
+    "border-width" => 0px, "transition" => 1seconds)
     style!(filecell, "background-color" => "#FFFF88")
+    childbox[:children] = Vector{Servable}([begin
+    build(c, mcell, d, explorer = true)
+    end
+    for mcell in directory_cells(cell.outputs * "/" * cell.source)])
     on(c, filecell, "dblclick") do cm::ComponentModifier
-        returner = dir_returner(c, cell, d, explorer = explorer)
-        toplevel = d.uri
-        if typeof(d) == Directory{:subdir}
-            toplevel = d.access["toplevel"]
+        if cm[filecell]["ex"] == "0"
+            style!(cm, childbox, "height" => 50percent, "opacity" => 100percent)
+            cm[filecell] = "ex" => "1"
+            return
         end
-        tlvlbecell = replace(toplevel, "/" => "|")
-        sel = replace(cm["$(tlvlbecell)cells"]["sel"], "|" => "/")
-        nuri::String = "$(sel)/$(cell.source)"
-        newcells = directory_cells(nuri)
-        nbecell = replace(nuri, "/" => "|")
-        cm["$(tlvlbecell)cells"] = "sel" => nbecell
-        nd = Directory(nuri * "/", "root" => "rw",
-        "toplevel" => toplevel, dirtype = "subdir")
-        set_children!(cm, "$(tlvlbecell)cells",
-        Vector{Servable}(vcat([returner],
-        [build(c, cel, nd, explorer = explorer) for cel in newcells])))
+        style!(cm, childbox, "opacity" => 0percent, "height" => 0percent)
+        cm[filecell] = "ex" => "0"
     end
     fname = a("$(cell.source)", text = cell.source)
     style!(fname, "color" => "gray", "font-size" => 15pt)
-    push!(filecell, fname)
-    filecell
+    push!(filecell, expandarrow, fname)
+    push!(container, filecell, childbox)
+    container
 end
 #==output[code]
 inputcell_style (generic function with 1 method)
@@ -420,7 +413,7 @@ function build(c::Connection, cell::Cell{:toml},
                         end for k in keys(c[:OliveCore].open[getname(c)].open)]
                     end
                     append!(cm, hiddencell, b)
-                end for proj in c[:OliveCore].open[getname(c)].open]
+                end for proj in c[:OliveCore].open[getname(c)].projects]
             end
             insert!(hiddencell[:children], 2, activatebutton)
         end
@@ -471,7 +464,7 @@ Session cells
 **Olive Cells**
 ```
 build(c::Connection, cm::ComponentModifier, cell::Cell{<:Any},
-cells::Vector{Cell{<:Any}}, windowname::String) -> ::Component{:div}
+cells::Vector{Cell{<:Any}}, proj::Project{<:Any}) -> ::Component{:div}
 ```
 ------------------
 The catchall/default `build` function for session cells. This function is what
@@ -490,12 +483,12 @@ Also important for cells:
 - `olive_save`
 """
 function build(c::Connection, cm::ComponentModifier, cell::Cell{<:Any},
-    cells::Vector{Cell{<:Any}}, windowname::String)
+    cells::Vector{Cell{<:Any}}, proj::Project{<:Any})
     tm = ToolipsMarkdown.TextStyleModifier(cell.source)
     ToolipsMarkdown.julia_block!(tm)
     builtcell::Component{:div} = build_base_cell(c, cm, cell, cells,
     windowname, sidebox = true, highlight = false)
-    km = cell_bind!(c, cell, cells, windowname)
+    km = cell_bind!(c, cell, cells, proj)
     interior = builtcell[:children]["cellinterior$(cell.id)"]
     sidebox = interior[:children]["cellside$(cell.id)"]
     [style!(child, "color" => "red") for child in sidebox[:children]]
@@ -514,7 +507,7 @@ inputcell_style (generic function with 1 method)
 **Olive Cells**
 ```
 evaluate(c::Connection, cm::ComponentModifier, cell::Cell{<:Any},
-cells::Vector{Cell}, window::String) -> ::Nothing
+cells::Vector{Cell}, proj::Project{<:Any}) -> ::Nothing
 ```
 ------------------
 This is the catchall/default function for the evaluation of any cell. Use this
@@ -527,15 +520,15 @@ be it will not run with the `runall` window button.
 ```
 """
 function evaluate(c::Connection, cm::ComponentModifier, cell::Cell{<:Any},
-    cells::Vector{Cell}, window::String)
+    cells::Vector{Cell}, proj::Project{<:Any})
     pos = findfirst(lcell -> lcell.id == cell.id, cells)
     cell.source = cm["cell$(cell.id)"]["text"]
     if pos != length(cells)
         focus!(cm, "cell$(cells[pos + 1].id)")
-    end
-    if pos == length(cells)
+    else
         new_cell = Cell(length(cells) + 1, "creator", "")
         push!(cells, new_cell)
+        ToolipsSession.append!(cm, proj.id, build(c, cm, new_cell, cells, proj))
         focus!(cm, "cell$(new_cell.id)")
     end
 end
@@ -567,7 +560,7 @@ inputcell_style (generic function with 1 method)
 **Olive Cells**
 ```
 cell_highlight!(c::Connection, cm::ComponentModifier, cell::Cell{<:Any},
-cells::Vector{Cell}, windowname::String)
+cells::Vector{Cell}, proj::Project{<:Any})
 ```
 ------------------
 The catchall/default highlighting function for cells. Build a base cell using
@@ -579,7 +572,7 @@ write this function for your cell and it should highlight properly.
 ```
 """
 function cell_highlight!(c::Connection,   cm::ComponentModifier, cell::Cell{<:Any},
-    cells::Vector{Cell},  windowname::String)
+    cells::Vector{Cell},  proj::Project{<:Any})
 
 end
 #==output[code]
@@ -590,7 +583,7 @@ inputcell_style (generic function with 1 method)
 **Olive Cells**
 ```
 cell_bind!(c::Connection, cm::ComponentModifier, cell::Cell{<:Any},
-cells::Vector{Cell}, windowname::String) -> ::ToolipsSession.KeyMap
+cells::Vector{Cell}, proj::Project{<:Any}) -> ::ToolipsSession.KeyMap
 ```
 ------------------
 Binds default cell controls, returns keymap to bind to your cell's input.
@@ -600,24 +593,33 @@ Binds default cell controls, returns keymap to bind to your cell's input.
 ```
 """
 function cell_bind!(c::Connection, cell::Cell{<:Any}, cells::Vector{Cell{<:Any}},
-    windowname::String)
+    proj::Project{<:Any})
     keybindings = c[:OliveCore].client_data[getname(c)]["keybindings"]
     km = ToolipsSession.KeyMap()
+    bind!(km, keybindings["save"], prevent_default = true) do cm::ComponentModifier
+        save_project(c, cm, proj)
+    end
     bind!(km, keybindings["up"]) do cm2::ComponentModifier
-        cell_up!(c, cm2, cell, cells, windowname)
+        cell_up!(c, cm2, cell, cells, proj)
     end
     bind!(km, keybindings["down"]) do cm2::ComponentModifier
-        cell_down!(c, cm2, cell, cells, windowname)
+        cell_down!(c, cm2, cell, cells, proj)
     end
     bind!(km, keybindings["delete"]) do cm2::ComponentModifier
         cell_delete!(c, cm2, cell, cells)
     end
-    bind!(km, keybindings["new"]) do cm2::ComponentModifier
-        cell_new!(c, cm2, cell, cells, windowname)
-    end
     bind!(km, keybindings["evaluate"]) do cm2::ComponentModifier
         remove_last_eval(c, cm2, cell)
-        evaluate(c, cm2, cell, cells, windowname)
+        evaluate(c, cm2, cell, cells, proj)
+    end
+    bind!(km, keybindings["new"]) do cm2::ComponentModifier
+        cell_new!(c, cm2, cell, cells, proj)
+    end
+    bind!(km, keybindings["focusup"]) do cm::ComponentModifier
+        focus_up!(c, cm, cell, cells, proj)
+    end
+    bind!(km, keybindings["focusdown"]) do cm::ComponentModifier
+        focus_down!(c, cm, cell, cells, proj)
     end
     km::KeyMap
 end
@@ -626,7 +628,8 @@ inputcell_style (generic function with 1 method)
 ==#
 #==|||==#
 function build_base_input(c::Connection, cm::ComponentModifier, cell::Cell{<:Any},
-    cells::Vector{Cell}, windowname::String; highlight::Bool = false)
+    cells::Vector{Cell}, proj::Project{<:Any}; highlight::Bool = false)
+    windowname::String = proj.id
     inputbox::Component{:div} = div("cellinput$(cell.id)")
     inside::Component{:div} = ToolipsDefaults.textdiv("cell$(cell.id)",
     text = replace(cell.source, "\n" => "</br>", " " => "&nbsp;"),
@@ -642,8 +645,15 @@ function build_base_input(c::Connection, cm::ComponentModifier, cell::Cell{<:Any
         "max-width" => 90percent, "border-width" =>  0px,  "pointer-events" => "none",
         "color" => "#4C4646 !important", "border-radius" => 0px, "font-size" => 13pt, "letter-spacing" => 1px,
         "font-family" => """"Lucida Console", "Courier New", monospace;""", "line-height" => 24px)
-        on(c, inputbox, "input") do cm2::ComponentModifier
-            cell_highlight!(c, cm2, cell, cells, windowname)
+        on(c, inputbox, "keyup") do cm2::ComponentModifier
+            cell_highlight!(c, cm2, cell, cells, proj)
+        end
+        on(cm, inputbox, "paste") do cl
+            push!(cl.changes, """
+            e.preventDefault();
+            var text = e.clipboardData.getData('text/plain');
+            document.execCommand('insertText', false, text);
+            """)
         end
         push!(inputbox, highlight_box, inside)
     else
@@ -656,11 +666,13 @@ inputcell_style (generic function with 1 method)
 ==#
 #==|||==#
 function build_base_cell(c::Connection, cm::ComponentModifier, cell::Cell{<:Any},
-    cells::Vector{Cell{<:Any}}, windowname::String; highlight::Bool = false,
+    cells::Vector{Cell{<:Any}}, proj::Project{<:Any}; highlight::Bool = false,
     sidebox::Bool = false)
+    windowname::String = proj.id
     outside::Component{:div} = div("cellcontainer$(cell.id)", class = "cell")
+    style!(outside, "transition" => 2seconds)
     interiorbox::Component{:div} = div("cellinterior$(cell.id)")
-    inputbox::Component{:div} = build_base_input(c, cm, cell, cells, windowname,
+    inputbox::Component{:div} = build_base_input(c, cm, cell, cells, proj,
     highlight = highlight)
     output::Component{:div} = divider("cell$(cell.id)out", class = "output_cell", text = cell.outputs)
     if sidebox
@@ -668,7 +680,7 @@ function build_base_cell(c::Connection, cm::ComponentModifier, cell::Cell{<:Any}
         cell_drag = topbar_icon("cell$(cell.id)drag", "drag_indicator")
         cell_run = topbar_icon("cell$(cell.id)drag", "play_arrow")
         on(c, cell_run, "click") do cm2::ComponentModifier
-            evaluate(c, cm2, cell, cells, windowname)
+            evaluate(c, cm2, cell, cells, proj)
         end
         # TODO move these styles to stylesheet
         style!(sidebox, "display" => "inline-block", "background-color" => "pink",
@@ -696,16 +708,17 @@ inputcell_style (generic function with 1 method)
 ==#
 #==|||==#
 function build(c::Connection, cm::ComponentModifier, cell::Cell{:code},
-    cells::Vector{Cell}, windowname::String)
+    cells::Vector{Cell}, proj::Project{<:Any})
+    windowname::String = proj.id
     tm = ToolipsMarkdown.TextStyleModifier(cell.source)
     ToolipsMarkdown.julia_block!(tm)
     builtcell::Component{:div} = build_base_cell(c, cm, cell, cells,
-    windowname, sidebox = true, highlight = true)
-    km = cell_bind!(c, cell, cells, windowname)
+    proj, sidebox = true, highlight = true)
+    km = cell_bind!(c, cell, cells, proj)
     interior = builtcell[:children]["cellinterior$(cell.id)"]
     inp = interior[:children]["cellinput$(cell.id)"]
     inp[:children]["cellhighlight$(cell.id)"][:text] = string(tm)
-    bind!(c, cm, inp[:children]["cell$(cell.id)"], km)
+    bind!(c, cm, inp[:children]["cell$(cell.id)"], km, on = :down)
     builtcell::Component{:div}
 end
 #==output[code]
@@ -713,7 +726,8 @@ inputcell_style (generic function with 1 method)
 ==#
 #==|||==#
 function build(c::Connection, cm::ComponentModifier, cell::Cell{:creator},
-    cells::Vector{Cell}, windowname::String)
+    cells::Vector{Cell}, proj::Project{<:Any})
+    windowname::String = proj.id
     creatorkeys = c[:OliveCore].client_data[getname(c)]["creatorkeys"]
     cbox = ToolipsDefaults.textdiv("cell$(cell.id)", text = "")
     style!(cbox, "outline" => "transparent", "color" => "white")
@@ -727,18 +741,19 @@ function build(c::Connection, cm::ComponentModifier, cell::Cell{:creator},
             deleteat!(cells, pos)
             insert!(cells, pos, new_cell)
             insert!(cm2, windowname, pos, build(c, cm2, new_cell, cells,
-             windowname))
+             proj))
+            focus!(cm2, "cell$(new_cell.id)")
          elseif txt != ""
              olive_notify!(cm2, "not a recognized cell hotkey", color = "red")
              set_text!(cm2, cbox, "")
         end
     end
-    km = cell_bind!(c, cell, cells, windowname)
+    km = cell_bind!(c, cell, cells, proj)
     bind!(c, cm, cbox, km)
     olmod = c[:OliveCore].olmod
     signatures = [m.sig.parameters[4] for m in methods(Olive.build,
     [Toolips.AbstractConnection, Toolips.Modifier, IPyCells.AbstractCell,
-    Vector{Cell}, String])]
+    Vector{Cell}, Project{<:Any}])]
      buttonbox = div("cellcontainer$(cell.id)")
      push!(buttonbox, cbox)
      push!(buttonbox, h("spawn$(cell.id)", 3, text = "new cell"))
@@ -757,7 +772,7 @@ function build(c::Connection, cm::ComponentModifier, cell::Cell{:creator},
              deleteat!(cells, pos)
              insert!(cells, pos, new_cell)
              insert!(cm2, windowname, pos, build(c, cm2, new_cell, cells,
-              windowname))
+              proj))
          end
          push!(buttonbox, b)
      end
@@ -775,7 +790,8 @@ inputcell_style (generic function with 1 method)
 ==#
 #==|||==#
 function cell_highlight!(c::Connection, cm::ComponentModifier, cell::Cell{:code},
-    cells::Vector{Cell}, windowname::String)
+    cells::Vector{Cell}, proj::Project{<:Any})
+    windowname::String = proj.id
     curr = cm["cell$(cell.id)"]["text"]
     curr_raw = cm["rawcell$(cell.id)"]["text"]
     if curr_raw == "]"
@@ -785,7 +801,7 @@ function cell_highlight!(c::Connection, cm::ComponentModifier, cell::Cell{:code}
         deleteat!(cells, pos)
         insert!(cells, pos, new_cell)
         ToolipsSession.insert!(cm, windowname, pos, build(c, cm, new_cell,
-         cells, windowname))
+         cells, proj))
          focus!(cm, "cell$(new_cell.id)")
     elseif curr_raw == ";"
         remove!(cm, "cellcontainer$(cell.id)")
@@ -794,7 +810,7 @@ function cell_highlight!(c::Connection, cm::ComponentModifier, cell::Cell{:code}
         deleteat!(cells, pos)
         insert!(cells, pos, new_cell)
         ToolipsSession.insert!(cm, windowname, pos, build(c, cm, new_cell,
-         cells, windowname))
+         cells, proj))
          focus!(cm, "cell$(new_cell.id)")
     elseif curr_raw == "?"
         pos = findfirst(lcell -> lcell.id == cell.id, cells)
@@ -803,7 +819,7 @@ function cell_highlight!(c::Connection, cm::ComponentModifier, cell::Cell{:code}
         insert!(cells, pos, new_cell)
         remove!(cm, "cellcontainer$(cell.id)")
         ToolipsSession.insert!(cm, windowname, pos, build(c, cm, new_cell,
-         cells, windowname))
+         cells, proj))
         focus!(cm, "cell$(new_cell.id)")
     elseif curr_raw == "#=TODO"
         remove!(cm, "cellcontainer$(cell.id)")
@@ -812,7 +828,7 @@ function cell_highlight!(c::Connection, cm::ComponentModifier, cell::Cell{:code}
         deleteat!(cells, pos)
         insert!(cells, pos, new_cell)
         ToolipsSession.insert!(cm, windowname, pos, build(c, cm, new_cell,
-         cells, windowname))
+         cells, proj))
          focus!(cm, "cell$(new_cell.id)")
     elseif curr_raw == "#=NOTE"
         pos = findfirst(lcell -> lcell.id == cell.id, cells)
@@ -821,7 +837,16 @@ function cell_highlight!(c::Connection, cm::ComponentModifier, cell::Cell{:code}
         insert!(cells, pos, new_cell)
         remove!(cm, "cellcontainer$(cell.id)")
         ToolipsSession.insert!(cm, windowname, pos, build(c, cm, new_cell,
-         cells, windowname))
+         cells, proj))
+        focus!(cm, "cell$(new_cell.id)")
+    elseif curr_raw == "include("
+        pos = findfirst(lcell -> lcell.id == cell.id, cells)
+        new_cell = Cell(pos, "include", cells[pos].source, cells[pos].outputs)
+        deleteat!(cells, pos)
+        insert!(cells, pos, new_cell)
+        remove!(cm, "cellcontainer$(cell.id)")
+        ToolipsSession.insert!(cm, windowname, pos, build(c, cm, new_cell,
+         cells, proj))
         focus!(cm, "cell$(new_cell.id)")
     end
     cursorpos = parse(Int64, cm["cell$(cell.id)"]["caret"])
@@ -847,7 +872,8 @@ inputcell_style (generic function with 1 method)
 ==#
 #==|||==#
 function evaluate(c::Connection, cm2::ComponentModifier, cell::Cell{:code},
-    cells::Vector{Cell}, window::String)
+    cells::Vector{Cell}, proj::Project{<:Any})
+    window = proj.id
     # set load icon
     icon = olive_loadicon()
     cell_drag = topbar_icon("cell$(cell.id)drag", "drag_indicator")
@@ -865,16 +891,13 @@ function evaluate(c::Connection, cm2::ComponentModifier, cell::Cell{:code},
         # get code
         rawcode::String = cm["cell$(cell.id)"]["text"]
         execcode::String = *("begin\n", rawcode, "\nend\n")
-        # get project
-        selected::String = cm["olivemain"]["selected"]
-        proj::Project{<:Any} = c[:OliveCore].open[getname(c)]
         ret::Any = ""
         p = Pipe()
         err = Pipe()
         standard_out::String = ""
         redirect_stdio(stdout = p, stderr = err) do
             try
-                ret = proj.open[window][:mod].evalin(Meta.parse(execcode))
+                ret = proj[:mod].evalin(Meta.parse(execcode))
             catch e
                 ret = e
             end
@@ -904,7 +927,7 @@ function evaluate(c::Connection, cm2::ComponentModifier, cell::Cell{:code},
         if pos == length(cells)
             new_cell = Cell(length(cells) + 1, "code", "", id = ToolipsSession.gen_ref())
             push!(cells, new_cell)
-            append!(cm, window, build(c, cm, new_cell, cells, window))
+            append!(cm, window, build(c, cm, new_cell, cells, proj))
             focus!(cm, "cell$(new_cell.id)")
             return
         else
@@ -924,7 +947,7 @@ Session cells
 ==#
 #==|||==#
 function build(c::Connection, cm::ComponentModifier, cell::Cell{:markdown},
-    cells::Vector{Cell}, windowname::String)
+    cells::Vector{Cell}, proj::Project{<:Any})
     keybindings = c[:OliveCore].client_data[getname(c)]["keybindings"]
     tlcell = ToolipsDefaults.textdiv("cell$(cell.id)",
     "class" => "cell")
@@ -943,7 +966,7 @@ function build(c::Connection, cm::ComponentModifier, cell::Cell{:markdown},
     on(c, cm, tlcell, "click") do cm::ComponentModifier
         focus!(cm, tlcell)
     end
-    km = cell_bind!(c, cell, cells, windowname)
+    km = cell_bind!(c, cell, cells, proj)
     bind!(c, cm, tlcell, km)
     tlcell[:children] = [innercell]
     push!(conta, tlcell)
@@ -954,7 +977,7 @@ inputcell_style (generic function with 1 method)
 ==#
 #==|||==#
 function evaluate(c::Connection, cm::ComponentModifier, cell::Cell{:markdown},
-    cells::Vector{Cell}, window::String)
+    cells::Vector{Cell}, proj::Project{<:Any})
     if cm["cell$(cell.id)"]["contenteditable"] == "true"
         activemd = cm["cell$(cell.id)"]["text"]
         cell.source = activemd * "\n"
@@ -968,7 +991,7 @@ inputcell_style (generic function with 1 method)
 ==#
 #==|||==#
 function build(c::Connection, cm::ComponentModifier, cell::Cell{:TODO},
-    cells::Vector{Cell}, window::String)
+    cells::Vector{Cell}, proj::Project{<:Any})
     cell.source = "#"
     maincontainer = div("cellcontainer$(cell.id)")
     style!(maincontainer, "background-color" => "#242526",
@@ -1007,7 +1030,7 @@ inputcell_style (generic function with 1 method)
 ==#
 #==|||==#
 function build(c::Connection, cm::ComponentModifier, cell::Cell{:NOTE},
-    cells::Vector{Cell}, window::String)
+    cells::Vector{Cell}, proj::Project{<:Any})
     cell.source = "#"
     maincontainer = div("cellcontainer$(cell.id)")
     style!(maincontainer, "background-color" => "#242526",
@@ -1045,12 +1068,10 @@ inputcell_style (generic function with 1 method)
 ==#
 #==|||==#
 function build(c::Connection, cm::ComponentModifier, cell::Cell{:versioninfo},
-    cells::Vector{Cell}, windowname::String)
-    tm = ToolipsMarkdown.TextStyleModifier(cell.source)
-    ToolipsMarkdown.julia_block!(tm)
+    cells::Vector{Cell}, proj::Project{<:Any})
     builtcell::Component{:div} = build_base_cell(c, cm, cell, cells,
-    windowname, sidebox = false, highlight = false)
-    km = cell_bind!(c, cell, cells, windowname)
+    proj, sidebox = false, highlight = false)
+    km = cell_bind!(c, cell, cells, proj)
     interior = builtcell[:children]["cellinterior$(cell.id)"]
     inp = interior[:children]["cellinput$(cell.id)"]
     bind!(c, cm, inp[:children]["cell$(cell.id)"], km)
@@ -1086,12 +1107,12 @@ inputcell_style (generic function with 1 method)
 ==#
 #==|||==#
 function build(c::Connection, cm::ComponentModifier, cell::Cell{:tomlvalues},
-    cells::Vector{Cell}, windowname::String)
+    cells::Vector{Cell}, proj::Project{<:Any})
     tm = ToolipsMarkdown.TextStyleModifier(cell.source)
     toml_block!(tm)
     builtcell::Component{:div} = build_base_cell(c, cm, cell, cells,
-    windowname, sidebox = true, highlight = true)
-    km = cell_bind!(c, cell, cells, windowname)
+    proj, sidebox = true, highlight = true)
+    km = cell_bind!(c, cell, cells, proj)
     interior = builtcell[:children]["cellinterior$(cell.id)"]
     style!(builtcell, "transition" => 1seconds)
     inp = interior[:children]["cellinput$(cell.id)"]
@@ -1105,12 +1126,15 @@ function build(c::Connection, cm::ComponentModifier, cell::Cell{:tomlvalues},
         if cm2[collapsebutt]["col"] == "false"
             style!(cm2, builtcell,
             "min-height" => 3percent, "height" => 10percent,
-            "overflow" => "hidden")
+            "overflow" => "hidden", "border-bottom-width" => 2px,
+             "border-bottom-style" => "solid",
+             "border-bottom-color" => "lightblue")
             set_text!(cm2, collapsebutt, "unfold_more")
             cm2[collapsebutt] = "col" => "true"
             return
         end
-        style!(cm2, builtcell, "min-height" => 50px, "height" => "auto")
+        style!(cm2, builtcell, "min-height" => 50px, "height" => "auto",
+        "border-bottom-width" => 0px)
         set_text!(cm2, collapsebutt, "unfold_less")
         cm2[collapsebutt] = "col" => "false"
     end
@@ -1123,9 +1147,9 @@ end
 inputcell_style (generic function with 1 method)
 ==#
 function evaluate(c::Connection, cm::ComponentModifier, cell::Cell{:tomlvalues},
-    cells::Vector{Cell}, window::String)
+    cells::Vector{Cell}, proj::Project{<:Any})
     curr = cm["cell$(cell.id)"]["text"]
-    proj = c[:OliveCore].open[getname(c)]
+    proj = c[:OliveCore].open[getname(c)][window]
     varname = "data"
     if length(curr) > 2
         if contains(curr[1:2], "[")
@@ -1135,17 +1159,13 @@ function evaluate(c::Connection, cm::ComponentModifier, cell::Cell{:tomlvalues},
             curr = "[data]\n$curr"
         end
     end
-    evalstr = "$varname = TOML.parse(\"\"\"$(curr)\"\"\")[\"$varname\"]"
-    mod = proj.open[window][:mod]
-    if ~(:TOML in names(mod))
-        evalstr = "using TOML;" * evalstr
-    end
+    evalstr = "using TOML;$varname = TOML.parse(\"\"\"$(curr)\"\"\")[\"$varname\"]"
     ret::Any = ""
     p = Pipe()
     err = Pipe()
     redirect_stdio(stdout = p, stderr = err) do
         try
-            ret = proj.open[window][:mod].evalin(Meta.parse(evalstr))
+            ret = proj[:mod].evalin(Meta.parse(evalstr))
         catch e
             ret = e
         end
@@ -1165,7 +1185,7 @@ inputcell_style (generic function with 1 method)
 
 #==|||==#
 function cell_highlight!(c::Connection, cm::ComponentModifier, cell::Cell{:tomlvalues},
-    cells::Vector{Cell}, windowname::String)
+    cells::Vector{Cell}, proj::Project{<:Any})
     curr = cm["cell$(cell.id)"]["text"]
     cell.source = curr
     tm = ToolipsMarkdown.TextStyleModifier(cell.source)
@@ -1178,8 +1198,8 @@ inputcell_style (generic function with 1 method)
 
 #==|||==#
 function build(c::Connection, cm::ComponentModifier, cell::Cell{:helprepl},
-    cells::Vector{Cell}, windowname::String)
-    km = cell_bind!(c, cell, cells, windowname)
+    cells::Vector{Cell}, proj::Project{<:Any})
+    km = cell_bind!(c, cell, cells, proj)
     src = ""
     if contains(cell.source, "#")
         src = split(cell.source, "?")[2]
@@ -1189,17 +1209,20 @@ function build(c::Connection, cm::ComponentModifier, cell::Cell{:helprepl},
     inner  = div("cellinside$(cell.id)")
     style!(inner, "display" => "flex")
     inside = ToolipsDefaults.textdiv("cell$(cell.id)", text = "")
-    bind!(km, "Backspace") do cm2::ComponentModifier
-        if cm2["rawcell$(cell.id)"]["text"] == ""
+    bind!(km, "Backspace", prevent_default = false) do cm2::ComponentModifier
+        if cm2["cell$(cell.id)"]["text"] == ""
             pos = findfirst(lcell -> lcell.id == cell.id, cells)
             new_cell = Cell(pos, "code", "")
             cells[pos] = new_cell
             cell = new_cell
             remove!(cm2, outside)
-            built = build(c, cm2, new_cell, cells, windowname)
+            built = build(c, cm2, new_cell, cells, proj)
             ToolipsSession.insert!(cm2, windowname, pos, built)
             focus!(cm2, "cell$(cell.id)")
         end
+    end
+    bind!(km, "Enter") do cm2::ComponentModifier
+        realevaluate(c, cm2, cell, cells, proj)
     end
     sidebox = div("cellside$(cell.id)")
     style!(sidebox, "display" => "inline-block",
@@ -1217,14 +1240,17 @@ function build(c::Connection, cm::ComponentModifier, cell::Cell{:helprepl},
      "background-color" => "#b33000", "color" => "white", "border-style" => "solid",
      "border-width" => 2px)
      output = div("cell$(cell.id)out")
+     style!(output, "max-height" => 40percent)
+     opbox::Component{:div} = div("opbox$(cell.id)")
+     pinbox::Component{:div} = div("pinbox$(cell.id)")
+     push!(output, opbox, pinbox)
      if contains(cell.outputs, ";")
          spl = split(cell.outputs, ";")
          lastoutput = spl[1]
          pinned = spl[2]
          [begin
             if pin != " "
-                push!(output, iframe("$(e)$(cell.id)pin", width = "500", height = "500",
-                src = "/doc?mod=$(windowname)&get=$pin"))
+
             end
         end for (e, pin) in enumerate(split(pinned, " "))]
      else
@@ -1239,46 +1265,54 @@ end
 inputcell_style (generic function with 1 method)
 ==#
 #==|||==#
-function evaluate(c::Connection, cm::ComponentModifier, cell::Cell{:helprepl},
-    cells::Vector{Cell}, window::String)
+function realevaluate(c::Connection, cm::ComponentModifier, cell::Cell{:helprepl},
+    cells::Vector{Cell}, proj::Project{<:Any})
     curr = cm["cell$(cell.id)"]["text"]
+    window::String = proj.id
     splitcmd = split(replace(curr, "\n" => ""), " ")
-    if length(splitcmd) == 0
-        return
-    end
-    cmd = splitcmd[1]
-    outps = Vector{Servable}()
-    if length(splitcmd) > 1
-        arg = splitcmd[2]
-        if cmd == ""
-            cmd = arg
-        elseif cmd == "pin"
-            outpus = split(cell.outputs, ";")
-            outpus[2] = outpus[2] * " $arg"
-            cell.outputs = join(outpus)
-            pinned = outpus[2]
-            [begin
-            push!(outps, iframe("$(e)$(cell.id)pin",
-            width = "700", height = "500",
-            src = "/doc?mod=$(window)&get=$pin"))
-        end for (e, pin) in enumerate(split(pinned, " "))]
+    if length(splitcmd) == 1
+        sec = section("$(splitcmd[1])")
+        exp = Meta.parse("""t = eval(Meta.parse("$(splitcmd[1])")); @doc(t)""")
+        docs = proj[:mod].evalin(exp)
+        push!(sec, tmd("docmd$(splitcmd[1])", string(docs)))
+        set_children!(cm, "opbox$(cell.id)", 
+        [sec])
+    elseif length(splitcmd) == 2
+        if string(splitcmd[1]) == "pin"
+            if splitcmd[2] != ""
+                cell.outputs = cell.outputs * "$(splitcmd[2]);"
+            end
         end
-    else
-        frame = iframe("$(cell.id)outframe", width = "700",
-        height = "500", src = "/doc?mod=$(window)&get=$(curr)")
-        push!(outps, frame)
     end
-    cell.source = "# ?$cmd"
-    set_children!(cm, "cell$(cell.id)out", outps)
+    splitputs = split(replace(cell.outputs, " " => ""), ";")
+    if contains(replace(cell.outputs, " " => " ", "\n" => ""), ";")
+        pins = [begin
+        docsection::Component{:section} = section("doc$pin")
+        push!(docsection, h("doclabel$pin", 2, text = pin))
+        exp = Meta.parse("""t = eval(Meta.parse("$pin")); @doc(t)""")
+        docs = string(proj[:mod].evalin(exp))
+        if contains(docs, "t` is of type `Nothing`.")
+            nothing::Nothing
+        else
+            push!(docsection, tmd("docmd$pin", string(docs)))
+            docsection::Component{:section}
+        end
+        end for pin in splitputs]
+        filter!(c -> ~(isnothing(c)), pins)
+        pinhead = h("pinhead$(cell.id)", 3, text = "pins")
+        pinsect::Vector{Servable} = Vector{Servable}([pinhead, pins ...])
+        set_children!(cm, "pinbox$(cell.id)", pinsect)
+    end
     set_text!(cm, "cell$(cell.id)", "")
+    focus!(cm, "cell$(cell.id)")
 end
 #==output[code]
 inputcell_style (generic function with 1 method)
 ==#
 #==|||==#
 function build(c::Connection, cm::ComponentModifier, cell::Cell{:shell},
-    cells::Vector{Cell}, windowname::String)
-    km = cell_bind!(c, cell, cells, windowname)
+    cells::Vector{Cell}, proj::Project{<:Any})
+    km = cell_bind!(c, cell, cells, proj)
     src = ""
     if contains(cell.source, "#")
         src = split(cell.source, "?")[2]
@@ -1295,10 +1329,13 @@ function build(c::Connection, cm::ComponentModifier, cell::Cell{:shell},
             cells[pos] = new_cell
             cell = new_cell
             remove!(cm2, outside)
-            built = build(c, cm2, new_cell, cells, windowname)
+            built = build(c, cm2, new_cell, cells, proj)
             ToolipsSession.insert!(cm2, windowname, pos, built)
             focus!(cm2, "cell$(cell.id)")
         end
+    end
+    bind!(km, "Enter") do cm2::ComponentModifier
+        realevaluate(c, cm2, cell, cells, proj)
     end
     sidebox = div("cellside$(cell.id)")
     style!(sidebox, "display" => "inline-block",
@@ -1338,10 +1375,10 @@ end
 Session cells
 ==#
 #==|||==#
-function evaluate(c::Connection, cm::ComponentModifier, cell::Cell{:shell},
-    cells::Vector{Cell}, windowname::String)
+function realevaluate(c::Connection, cm::ComponentModifier, cell::Cell{:shell},
+    cells::Vector{Cell}, proj::Project{<:Any})
     curr = cm["cell$(cell.id)"]["text"]
-    mod = c[:OliveCore].open[getname(c)].open[windowname][:mod]
+    mod = c[:OliveCore].open[getname(c)][windowname][:mod]
     p = Pipe()
     err = Pipe()
     standard_out::String = ""
@@ -1363,9 +1400,10 @@ inputcell_style (generic function with 1 method)
 ==#
 #==|||==#
 function build(c::Connection, cm::ComponentModifier, cell::Cell{:pkgrepl},
-    cells::Vector{Cell}, windowname::String)
+    cells::Vector{Cell}, proj::Project{<:Any})
     cell.source = ""
-    km = cell_bind!(c, cell, cells, windowname)
+    windowname::String = proj.id
+    km = cell_bind!(c, cell, cells, proj)
     outside = div("cellcontainer$(cell.id)", class = "cell")
     output = div("cell$(cell.id)out")
     style!(output, "background-color" => "#301934", "color" => "white",
@@ -1375,17 +1413,20 @@ function build(c::Connection, cm::ComponentModifier, cell::Cell{:pkgrepl},
     interior = div("cellinterior$(cell.id)")
     style!(interior, "display" => "flex")
     inside = ToolipsDefaults.textdiv("cell$(cell.id)", text = cell.outputs)
-    bind!(km, "Backspace") do cm2::ComponentModifier
+    bind!(km, "Backspace", prevent_default = false) do cm2::ComponentModifier
         if cm2["rawcell$(cell.id)"]["text"] == ""
             pos = findfirst(lcell -> lcell.id == cell.id, cells)
             new_cell = Cell(pos, "code", "")
             cells[pos] = new_cell
             cell = new_cell
             remove!(cm2, outside)
-            built = build(c, cm2, new_cell, cells, windowname)
+            built = build(c, cm2, new_cell, cells, proj)
             ToolipsSession.insert!(cm2, windowname, pos, built)
             focus!(cm2, "cell$(cell.id)")
         end
+    end
+    bind!(km, "Enter") do cm2::ComponentModifier
+        realevaluate(c, cm2, cell, cells, proj)
     end
     sidebox = div("cellside$(cell.id)")
     style!(sidebox, "display" => "inline-block",
@@ -1410,9 +1451,9 @@ end
 inputcell_style (generic function with 1 method)
 ==#
 #==|||==#
-function evaluate(c::Connection, cm::ComponentModifier, cell::Cell{:pkgrepl},
-    cells::Vector{Cell}, windowname::String)
-    mod = c[:OliveCore].open[getname(c)].open[windowname][:mod]
+function realevaluate(c::Connection, cm::ComponentModifier, cell::Cell{:pkgrepl},
+    cells::Vector{Cell}, proj::Project{<:Any})
+    mod = proj[:mod]
     rt = cm["cell$(cell.id)"]["text"]
     args = split(rt, " ")
     evalstr = "Pkg.$(args[1])("
@@ -1452,27 +1493,62 @@ function evaluate(c::Connection, cm::ComponentModifier, cell::Cell{:pkgrepl},
     ret = ""
     redirect_stdio(stdout = p, stderr = err) do
         try
-            mod.evalin(Meta.parse(evalstr))
+            ret = mod.evalin(Meta.parse(evalstr))
         catch e
             ret = e
         end
     end
     close(Base.pipe_writer(err))
+    close(Base.pipe_writer(p))
     standard_out = read(err, String)
+    out_p = read(p, String)
     if typeof(ret) <: Exception
         set_text!(cm, "cell$(cell.id)out", string(ret))
         style!(cm, "cell$(cell.id)out", "height" => "auto",
         "opacity" => 100percent)
         return
     end
+    if typeof(ret) == Vector{String}
+        standard_out = standard_out * "\n" * string(join(ret, "\n"))
+    end
     cell.source = cell.source * "\n" * evalstr
     cell.outputs = rt
-    set_text!(cm, "cell$(cell.id)out", replace(standard_out, "✗" => "X",
-    "\n" => "<br>", "✓" => "</", "*" => "", "⇒" => "->"))
+    if out_p == ""
+        set_text!(cm, "cell$(cell.id)out", replace(standard_out, "✗" => "X",
+        "\n" => "<br>", "✓" => "</", "*" => "", "⇒" => "->"))
+    else
+        set_text!(cm, "cell$(cell.id)out", replace(out_p, "✗" => "X",
+        "\n" => "<br>", "✓" => "</", "*" => "", "⇒" => "->"))
+    end
     set_text!(cm, "cell$(cell.id)", "")
     set_text!(cm, "$(cell.id)cmds", replace(cell.source, "\n" => "<br>"))
     style!(cm, "cell$(cell.id)out", "height" => "auto", "opacity" => 100percent)
 end
+
+function build(c::Connection, cm::ComponentModifier, cell::Cell{:include},
+    cells::Vector{Cell}, proj::Project{<:Any})
+    tm = ToolipsMarkdown.TextStyleModifier(cell.source)
+    ToolipsMarkdown.julia_block!(tm)
+    builtcell::Component{:div} = build_base_cell(c, cm, cell, cells,
+    proj, sidebox = true, highlight = true)
+    km = cell_bind!(c, cell, cells, proj)
+    interior = builtcell[:children]["cellinterior$(cell.id)"]
+    inp = interior[:children]["cellinput$(cell.id)"]
+    style!(interior[:children]["cellside$(cell.id)"],
+    "background-color" => "red")
+    inp[:children]["cellhighlight$(cell.id)"][:text] = string(tm)
+    bind!(c, cm, inp[:children]["cell$(cell.id)"], km)
+    builtcell::Component{:div}
+end
+
+function cell_highlight!(c::Connection, cm::ComponentModifier, cell::Cell{:include},
+    cells::Vector{Cell}, proj::Project{<:Any})
+    cell.source = cm["cell$(cell.id)"]["text"]
+    tm = ToolipsMarkdown.TextStyleModifier(cell.source)
+    ToolipsMarkdown.julia_block!(tm)
+    set_text!(cm, "cellhighlight$(cell.id)", string(tm))
+end
+
 #==output[code]
 inputcell_style (generic function with 1 method)
 ==#
@@ -1545,3 +1621,22 @@ end
 inputcell_style (generic function with 1 method)
 ==#
 #==|||==#
+function build(c::Connection, cm::ComponentModifier, cell::Cell{:docmodule},
+    cells::Vector{Cell}, proj::Project{<:Any})
+    mainbox::Component{:section} = section("cellcontainer$(cell.id)")
+    n::Vector{Symbol} = names(cell.outputs, all = true)
+    remove::Vector{Symbol} =  [Symbol("#eval"), Symbol("#include"), :eval, :example, :include, Symbol(string(cell.outputs))]
+    filter!(x -> ~(x in remove) && ~(contains(string(x), "#")), n)
+    selectorbuttons::Vector{Servable} = [begin
+        docdiv = div("doc$name", text = string(name))
+        on(c, docdiv, "click") do cm2::ComponentModifier
+            exp = Meta.parse("""t = eval(Meta.parse("$name")); @doc(t)""")
+            docs = cell.outputs.eval(exp)
+            docum = tmd("docs$name", string(docs))
+            append!(cm2, docdiv, docum)
+        end
+        docdiv
+    end for name in n]
+    mainbox[:children] = vcat([h("$(cell.outputs)", 2, text = string(cell.outputs))], selectorbuttons)
+    mainbox
+end

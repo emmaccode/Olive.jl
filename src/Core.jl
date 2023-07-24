@@ -65,6 +65,21 @@ setindex!(om::OliveModifier, o::Any, symb::Symbol) = setindex!(om.data, o, symb)
 #==output[code]
 ==#
 #==|||==#
+
+function load_extensions!(c::Connection, cm::ComponentModifier, olmod::Module)
+    mod = OliveModifier(c, cm)
+    Base.invokelatest(c[:OliveCore].olmod.build, c, mod,
+    OliveExtension{:invoker}())
+    signatures = [m.sig.parameters[4] for m in methods(olmod.build,
+     [Any, Modifier, OliveExtension])]
+    for sig in signatures
+        if sig == OliveExtension{<:Any}
+            continue
+        end
+        Base.invokelatest(c[:OliveCore].olmod.build, c, mod, sig())
+    end
+end
+
 """
 **Olive Core**
 ### build(c::Connection, om::OliveModifier, oe::OliveExtension{<:Any})
@@ -93,11 +108,11 @@ build(c::Connection, om::OliveModifier, oe::OliveExtension{:keybinds}) = begin
         "copy" => ["C", "ctrl", "shift"],
         "paste" => ["V", "ctrl", "shift"],
         "cut" => ["X", "ctrl", "shift"],
-        "new" => ["Q", "ctrl", "shift"]
+        "new" => ["Enter", "ctrl", "shift"],
+        "focusup" => ["ArrowUp", "shift"],
+        "focusdown" => ["ArrowDown", "shift"],
+        "save" => ["s", "ctrl"]
         ))
-    end
-    if om.data["selected"] == "files"
-        return
     end
     keybind_section = section("settings_keys")
     shftlabel = a("shiftlabel", text = "  shift:    ")
@@ -110,9 +125,9 @@ build(c::Connection, om::OliveModifier, oe::OliveExtension{:keybinds}) = begin
         style!(setinput, "background-color" => "blue", "width" => 5percent,
         "display" => "inline-block", "color" => "white")
         shift_checkbox = ToolipsDefaults.checkbox("shiftk$(keybinding[1])",
-        "checked" => string("shift" in keybinding[2]))
+        value = "shift" in keybinding[2])
         ctrl_checkbox = ToolipsDefaults.checkbox("ctrlk$(keybinding[1])",
-        "checked" => string("ctrl" in keybinding[2]))
+        value = "ctrl" in keybinding[2])
         confirm = button("keybind$(keybinding[1])confirm", text = "confirm")
         on(c, confirm, "click") do cm::ComponentModifier
             key_vec = Vector{String}()
@@ -199,6 +214,57 @@ build(c::Connection, om::OliveModifier, oe::OliveExtension{:creatorkeys}) = begi
     append!(om, "settingsmenu", creatorkeysmen)
 end
 
+build(c::Connection, om::OliveModifier, oe::OliveExtension{:highlightstyler}) = begin
+    if ~("highlighting" in keys(c[:OliveCore].client_data[getname(c)]))
+        tm = ToolipsMarkdown.TextStyleModifier("")
+        ToolipsMarkdown.highlight_julia!(tm)
+        dic = Dict{String, Dict{<:Any, <:Any}}()
+        push!(c[:OliveCore].client_data[getname(c)], "highlighting" => dic)
+        push!(dic, "julia" => Dict{String, String}(
+            [string(k) => string(v[1][2]) for (k, v) in tm.styles]))
+    end
+    dic = c[:OliveCore].client_data[getname(c)]["highlighting"]
+    sect = section("highlight_settings")
+    highheader = h("highlighthead", 3, text = "highlights")
+    push!(sect, highheader)
+    for colorset in keys(dic)
+        [begin 
+            label = h("colorlabel", 5, text = color)
+            vbox = ToolipsDefaults.colorinput("$(color)$(colorset)", 
+            value = "'$(dic[colorset][color])'")
+            clrdiv = div("clrdiv$(color)$(colorset)")
+            style!(clrdiv, "display" => "inline-block")
+            push!(clrdiv, label, vbox)
+            push!(sect, clrdiv)
+        end for color in keys(dic[colorset])]
+    end
+    append!(om, "settingsmenu", sect)
+end
+
+build(c::Connection, om::OliveModifier, oe::OliveExtension{:docbrowser}) = begin
+    explorericon = topbar_icon("docico", "newspaper")
+    on(c, explorericon, "click") do cm::ComponentModifier
+        mods = [begin 
+            if :mod in keys(p.data)
+                p.data[:mod]
+            else
+                nothing
+            end
+        end for p in c[:OliveCore].open[getname(c)].projects]
+        filter!(x::Any -> ~(isnothing(x)), mods)
+        push!(mods, Olive, olive)
+        cells = Vector{Cell}([Cell(e, "docmodule", "", mod) for (e, mod) in enumerate(mods)])
+        home_direc = Directory(c[:OliveCore].data["home"])
+        projdict::Dict{Symbol, Any} = Dict{Symbol, Any}(:cells => cells,
+        :path => home_direc.uri, :env => home_direc.uri)
+        myproj::Project{:doc} = Project{:doc}(home_direc.uri, projdict)
+        push!(c[:OliveCore].open[getname(c)].projects, myproj)
+        tab::Component{:div} = build_tab(c, "documentation")
+        open_project(c, om, proj, tab)
+    end
+    insert!(om, "rightmenu", 1, explorericon)
+end
+
 function save_settings!(c::Connection; core::Bool = false)
     homedir = c[:OliveCore].data["home"]
     alltoml = read("$homedir/Project.toml", String)
@@ -249,6 +315,14 @@ mutable struct Directory{S <: Any}
         new{Symbol(dirtype)}(dirtype, uri, Dict(access ...), file_cells)
     end
 end
+
+getindex(p::Vector{Directory{<:Any}}, s::String) = begin
+    pos = findfirst(dir::Directory{<:Any} -> dir.name == s, p)
+    if isnothing(pos)
+        throw(KeyError("project $s not found!"))
+    end
+    p[pos]
+end
 #==output[code]
 ==#
 #==|||==#
@@ -265,27 +339,32 @@ create an OliveaExtension and
 """
 function build(c::Connection, dir::Directory{<:Any}, m::Module;
 exp::Bool = false)
+    becell = replace(dir.uri, "/" => "|")
     container = div(dir.uri, align = "left")
     style!(container, "overflow" => "hidden")
-    dirinfocont = div("dirinfocont$(dir.uri)")
-    style!(dirinfocont, "overflow" => "visible")
+    containercontrols = div("$(dir.uri)controls", align = "center")
+    dir_b = topbar_icon("dirb$(becell)", "expand_more")
+    style!(dir_b, "color" => "white", "font-size" => 23pt, "display" => "flex", 
+    "background-color" => "#8B4000", "font-weight" => "bold")
+    push!(containercontrols, dir_b)
     if "Project.toml" in readdir(dir.uri)
         toml_cats = TOML.parse(read(dir.uri * "/Project.toml",
         String))
         if "name" in keys(toml_cats)
             projname = toml_cats["name"]
             envtop = a("headingenv$(dir.uri)", text = projname)
-            style!(envtop, "padding" => 6px, "background-color" => "blue",
-            "font-size" => 15pt, "font-weight" => "bold",
-            "border-radius" => 3px, "color" => "white")
-            push!(dirinfocont, envtop)
+            style!(envtop, "padding" => 4px, "background-color" => "blue",
+            "font-size" => 12pt, "font-weight" => "bold", "margin-top" => 0px,
+            "border-radius" => 0px, "color" => "white", "display" => "flex")
+            push!(containercontrols, envtop)
         end
         if "type" in keys(toml_cats)
             projtype = toml_cats["type"]
             projtop = a("typeenv$(dir.uri)", text = projtype)
-            style!(projtop, "padding" => 6px, "background-color" => "darkgreen",
-            "font-size" => 15pt, "border-radius" => 3px, "color" => "white")
-            push!(dirinfocont, projtype)
+            style!(projtop, "padding" => 4px, "background-color" => "darkgreen",
+            "font-size" => 12pt, "border-radius" => 0px, "color" => "white", "margin-top" => 0px,
+            "display" => "flex")
+            push!(containercontrols, projtype)
         end
     end
     dirtext = split(replace(dir.uri, homedir() => "~",), "/")
@@ -294,47 +373,55 @@ exp::Bool = false)
     end
     dirtop = a("heading$(dir.uri)", text = join(dirtext, "/"))
     style!(dirtop, "color" => "white", "background-color" => "darkblue",
-    "font-size" => 10pt, "border-radius" => 12px, "margin-left" => 5px,
-    "font-weight" => "bold",
-    "padding" => 7px)
-    push!(dirinfocont, dirtop)
+    "font-size" => 12pt, "border-radius" => 0px,
+    "font-weight" => "bold", "padding" => 4px, "display" => "flex")
+    push!(containercontrols, dirtop)
     cells = [begin
         Base.invokelatest(m.build, c, cell, dir, explorer = exp)
     end for cell in dir.cells]
-    becell = replace(dir.uri, "/" => "|")
-    cellcontainer = section("$(becell)cells", sel = becell)
-    style!(cellcontainer, "padding" => 20px, "background-color" => "#DFD0C0",
-    "border-width" => 0px, "overflow" => "visible", "border-style" => "solid",
-    "border-color" => "darkblue", "border-width" => 1px)
+    cellcontainer = section("$(becell)cells", ex = 0)
+    style!(cellcontainer, "padding" => 10px, "background-color" => "transparent",
+    "overflow" => "visible", "border-style" => "solid", "border-width" => 0px, "border-radius" => 0px,
+    "border-color" => "darkblue", "border-bottom-width" => 1px, "border-top-width" => 1px,
+    "transition" => 1seconds, "height" => 0percent, "opacity" => 0percent)
     cellcontainer[:children] = cells
-    containercontrols = div("$(dir.uri)controls")
     newtxt = ToolipsDefaults.textdiv("newtxt$becell", text = "")
     newtxt["align"] = "left"
     style!(newtxt, "border-width" => 0px,
     "opacity" => 0percent, "transition" => "1s", "width" => 0percent,
-    "display" => "inline-block", "padding" => "0px", "outline" => "none",
+    "display" => "flex", "padding" => "0px", "outline" => "none",
     "background-color" => "white", "font-weight" => "bold", "color" => "darkblue",
     "border-style" => "solid", "border-width" => 2px)
-    style!(containercontrols, "padding" => 10px, "overflow" => "visible",
-    "border-radius" => 8px, "display" => "flex", "width" => 350px,
-    "max-width" => 450px,
-    "max-height" => 25px,
-    "border-bottom-left-radius" => "0px", "margin-left" => 7px,
-    "border-bottom-right-radius" => 0px, "background-color" => "#DFD0C0",
-    "border-style" => "solid", "border-color" => "darkblue", "border-width" => 1px)
-    push!(containercontrols, dirinfocont)
+    style!(containercontrols, "padding" => 0px, "overflow" => "visible",
+    "display" => "flex", "margin-left" => 0px,
+    "border-width" => 0px, "border-radius" => 0px,
+    "border-bottom-left-radius" => "0px",
+    "border-bottom-right-radius" => 0px, "background-color" => "white",
+    "border-style" => "solid", "border-color" => "darkblue")
     new_dirb = topbar_icon("newdir$(becell)", "create_new_folder")
+    collapse_b = topbar_icon("col$becell", "expand_more")
     new_fb = topbar_icon("newfb$(becell)", "article")
-    style!(new_dirb, "color" => "darkblue", "font-size" => 23pt, "display" => "inline-block")
-    style!(new_fb, "color" => "darkblue", "font-size" => 23pt)
+    style!(new_dirb, "color" => "white", "font-size" => 23pt, "display" => "flex", "background-color" => "blue")
+    style!(collapse_b, "color" => "white", "font-size" => 23pt, "display" => "flex", "background-color" => "red",
+    "transition" => 1seconds)
+    style!(new_fb, "color" => "white", "font-size" => 23pt, "background-color" => "red")
+    on(c, collapse_b, "click") do cm2::ComponentModifier
+        if cm2[cellcontainer]["ex"] == "0"
+            cm2[cellcontainer] = "ex" => 1
+            style!(cm2, cellcontainer, "height" => 20percent, "opacity" => 100percent, 
+            "overflow-y" => "scroll")
+            style!(cm2, collapse_b, "transform" => "rotate(-90deg)")
+            return
+        end
+        cm2[cellcontainer] = "ex" => 0
+        style!(cm2, collapse_b, "transform" => "rotate(0deg)")
+        style!(cm2, cellcontainer, "height" => 0percent, "opacity" => 0percent)        
+    end
     if dir.uri == c[:OliveCore].data["home"]
-        style!(cellcontainer, "background-color" => "pink")
-        style!(containercontrols, "background-color" => "pink")
-        srcbutton = button("src$(becell)", text = "source")
+        srcbutton = div("src$(becell)", text = "source")
         on(c, srcbutton, "click") do cm::ComponentModifier
             home = c[:OliveCore].data["home"]
             try
-                olive_cells = IPyCells.read_jl("$home/src/olive.jl")
                 source_module!(c[:OliveCore])
                 olive_notify!(cm, "olive module successfully sourced!", color = "green")
             catch e
@@ -343,16 +430,11 @@ exp::Bool = false)
                 color = "red")
             end
         end
-        headerimg = olive_cover()
-        headerimg["width"] = "100"
-        oliveheaderbox = div("homeheaderbx", align = "center")
-        style!(oliveheaderbox, "overflow" => "hidden")
-        push!(oliveheaderbox, headerimg)
-        push!(container, oliveheaderbox)
-        style!(srcbutton, "background-color" => "red")
+        style!(srcbutton, "background-color" => "red", "font-size" => 12pt, "padding" => 4px, "color" => "white",
+        "font-weight" => "bold", "display" => "flex", "align" => "center", "cursor" => "pointer", "border-radius" => 0px)
         push!(containercontrols, srcbutton)
     end
-    push!(containercontrols, new_dirb, new_fb)
+    push!(containercontrols, new_dirb, new_fb, collapse_b)
     on(c, new_dirb, "click") do cm::ComponentModifier
         newconfbutton = button("fconfbutt$(becell)", text = "confirm")
         if ~(newconfbutton.name in keys(cm.rootc))
@@ -421,12 +503,14 @@ exp::Bool = false)
         end
         olive_notify!(cm, "you already have a naming box open...", color = "red")
     end
+    style!(containercontrols[:children][length(containercontrols[:children])], 
+    "border-top-left-radius" => 0px, "border-bottom-left-radius" => 0px, "border-radius" => 8px)
     push!(container, newtxt, containercontrols, cellcontainer)
     return(container)
 end
 
 """
-### Project{name <: Any} <: Toolips.Servable
+### Project{name <: Any}
 - name::String
 - dir::String
 - directories::Vector{Directory{<:Any}}
@@ -442,22 +526,26 @@ cells and directories
 ##### constructors
 - Directory(uri::String, access::Pair{String, String} ...; dirtype::String = "olive")
 """
-mutable struct Project{name <: Any} <: Servable
+mutable struct Project{name <: Any}
     name::String
-    dir::String
-    directories::Vector{Directory{<:Any}}
-    environment::String
-    open::Dict{String, Dict{Symbol, Any}}
-    function Project(name::String, dir::String; environment::String = dir)
-        open::Dict{String, Dict{String, Any}} = Dict{String, Dict{String, Any}}()
-        new{Symbol(name)}(name, dir, Vector{Directory{<:Any}}(),
-         environment, open)::Project{<:Any}
+    data::Dict{Symbol, Any}
+    id::String
+    Project{T}(name::String,
+    data::Dict{Symbol, Any} = Dict{Symbol, Any}()) where {T <: Any} = begin
+        uuid::String = replace(ToolipsSession.gen_ref(10),
+        [string(dig) => "" for dig in digits(1234567890)] ...)
+        new{T}(name, data, uuid)::Project{<:Any}
     end
-    Project{T}(name::String, dir::String; environment::String = dir) where {T <: Any} = begin
-        open::Dict{String, Dict{String, Any}} = Dict{String, Dict{String, Any}}()
-        groups::Dict{String, String} = Dict("root" => "rw")
-        new{T}(name, dir, Vector{Directory{<:Any}}(), environment, open)::Project{<:Any}
+end
+
+getindex(p::Project{<:Any}, symb::Symbol) = p.data[symb]
+
+getindex(p::Vector{Project{<:Any}}, s::String) = begin
+    pos = findfirst(proj::Project{<:Any} -> proj.name == s, p)
+    if isnothing(pos)
+        throw(KeyError("project $s not found!"))
     end
+    p[pos]
 end
 
 """
@@ -474,48 +562,36 @@ create an OliveaExtension and
 
 ```
 """
-function build(c::AbstractConnection, cm::ComponentModifier, p::Project{<:Any};
-    at::String = first(p.open)[1])
-    name = at
-    frstcells::Vector{Cell} = p.open[at][:cells]
-    retvs = Vector{Servable}()
-    [begin
-        push!(retvs, Base.invokelatest(c[:OliveCore].olmod.build, c, cm, cell,
-        frstcells, name))
-    end for cell in frstcells]
-    overwindow = div("$(name)over")
-    style!(overwindow, "display" => "inline-block",
-    "min-width" => 50percent,
-    "padding" => 0px, "margin-top" => 2px, "overflow" => "hidden",
-    "height" => 95percent)
-    proj_window = div(name)
-    style!(proj_window, "border-width" => 2px, "border-style" => "solid",
-    "overflow-y" => "scroll !important", "height" => 92percent, "min-width" => 40percent)
+function build(c::AbstractConnection, cm::ComponentModifier, p::Project{<:Any})
+    frstcells::Vector{Cell} = p[:cells]
+    retvs = Vector{Servable}([begin
+        Base.invokelatest(c[:OliveCore].olmod.build, c, cm, cell,
+        frstcells, p)::Component{<:Any}
+    end for cell in frstcells])
+    proj_window::Component{:div} = div(p.id)
     proj_window[:children] = retvs
-    push!(overwindow, build_tab(c, name), proj_window)
-    overwindow::Component{:div}
+    style!(proj_window, "overflow-y" => "scroll", "overflow-x" => "hidden")
+    proj_window::Component{:div}
 end
 
-function group(c::Connection)
-
-end
-
-can_read(c::Connection, d::Directory{<:Any}) = contains("r", d.access[group(c)])
-can_evaluate(c::Connection, p::Project{<:Any}) = contains("e", d.access[group(c)])
-can_write(c::Connection, p::Project{<:Any}) = contains("w", d.access[group(c)])
-
-function load_extensions!(c::Connection, cm::ComponentModifier, olmod::Module)
-    mod = OliveModifier(c, cm)
-    Base.invokelatest(c[:OliveCore].olmod.build, c, mod,
-    OliveExtension{:invoker}())
-    signatures = [m.sig.parameters[4] for m in methods(olmod.build,
-     [Any, Modifier, OliveExtension])]
-    for sig in signatures
-        if sig == OliveExtension{<:Any}
-            continue
-        end
-        Base.invokelatest(c[:OliveCore].olmod.build, c, mod, sig())
+mutable struct Environment
+    name::String
+    directories::Vector{Directory}
+    projects::Vector{Project}
+    function Environment(name::String)
+        new(name, Vector{Directory}(),
+        Vector{Project}())::Environment
     end
+end
+
+getindex(e::Environment, proj::String) = e.projects[proj]::Project{<:Any}
+
+getindex(e::Vector{Environment}, name::String) = begin
+    pos = findfirst(env::Environment -> env.name == name, e)
+    if isnothing(pos)
+        throw(KeyError("Environment for $name not found."))
+    end
+    e[pos]::Environment
 end
 
 mutable struct OliveCore <: ServerExtension
@@ -524,16 +600,16 @@ mutable struct OliveCore <: ServerExtension
     data::Dict{String, Any}
     names::Dict{String, String}
     client_data::Dict{String, Dict{String, Any}}
-    open::Dict{String, Project{<:Any}}
+    open::Vector{Environment}
     client_keys::Dict{String, String}
     function OliveCore(mod::String)
         data = Dict{Symbol, Any}()
         m = eval(Meta.parse("module olive end"))
-        projopen = Dict{String, Project{<:Any}}()
+        open = Vector{Environment}()
         client_data = Dict{String, Dict{String, Any}}()
         client_keys::Dict{String, String} = Dict{String, String}()
         new(m, [:connection], data, Dict{String, String}(),
-        client_data, projopen, client_keys)
+        client_data, open, client_keys)
     end
 end
 
@@ -544,11 +620,15 @@ function source_module!(oc::OliveCore)
     olive_cells = IPyCells.read_jl("$homedirec/src/olive.jl")
     filter!(ocell -> ocell.type == "code" || ocell.source != "\n" || cell.source != "\n\n",
     olive_cells)
-    modstr = join([cell.source for cell in olive_cells[2:length(olive_cells)]])
-    modend = findlast("end # module", modstr)
+
+    modstr = join(
+        [cell.source for cell in olive_cells[2:length(olive_cells)]]
+        )
+    println(modstr)
+    modend = findlast("end", modstr)
     modstr = modstr[1:modend[1] + 3]
     pmod = Meta.parse(modstr[1:length(modstr) - 1])
-    olmod::Module = eval(pmod)
+    olmod::Module = Main.evalin(pmod)
     Base.invokelatest(olmod.build, oc)
     oc.olmod = olmod
 end

@@ -1,4 +1,4 @@
- """
+"""
 Created in February, 2022 by
 [chifi - an open source software dynasty.](https://github.com/orgs/ChifiSource)
 by team
@@ -28,11 +28,19 @@ using ToolipsMarkdown
 using ToolipsBase64
 using TOML
 using Revise
+#==output[NOTE]
+This 'evalin' function is exported and to be addressed throughout code (for the olmod container).
+==#
+#==|||==#
+global evalin(ex::Any) = begin
+    Main.eval(ex)
+end
+export evalin
 #==output[code]
 ==#
 #==|||==#
 function version()
-    srcdir = @__DIR__
+    srcdir = replace(@__DIR__, "\\" => "/")
     splits = split(srcdir, "/")
     oliveprojdir = join(splits[1:length(splits) - 1], "/")
     projinfo = TOML.parse(read(oliveprojdir * "/Project.toml", String))
@@ -68,12 +76,35 @@ end
 #==|||==#
 function olive_motd()
     recent_str::String = """# olive editor
-    ##### version $(version()) (an alpha)
-    Welcome to olive $(version())! This is an early version of olive
-    that is meant to demonstrate the basic features, functionalities, and
-    capabilities of olive. In the future, this cell will contain release notes;
-    you may choose whether you want to keep this here or not! Thanks for trying
-    olive!
+    ##### version $(version()) (pre-release)
+    - Fixed Windows (the OS) directories (replaced backslashes with slashes).
+    - Added new `Environment` to encompass projects.
+    - Added parametric `Project` methods `source_module!` + `check!`.
+    - Fixed event reference loss in linker.
+    - **include** cells.
+    - Changed REPL cells -- `Enter` to run, `Shift` + `Enter` runs to next cell.
+    **note** that this requires `ToolipsSession` **0.3.4+**.
+     If using an earlier version, both `Shift` + `Enter` and `Enter` will do
+     the same thing -- run the cell.
+    - Substantial improvements to **helprepl** and **pkgrepl** cells.
+    - Fixed checkbox binding population in settings menu.
+    - Updated **creator** cells to focus on new cell.
+    - Save as binding in file menu.
+    - Added drag indicator to file cells (no drag yet).
+    - Removed last evaluation key from cell.
+    - Updated directory styles.
+    - Changed windowing from in-line to pane view
+    - prevented defaults
+    - added window key-bindings, shift focus (`shift + ArrowUp`)
+    - Added syntax highlighting colors to settings panel.
+    - Added workspace manager, directory additions.
+
+    This version was mainly focused on fixing the issues associated with
+    the initial `0.0.8` release. There have also been substantial revisions 
+    to windowing. There is now a new work-space manager with a split-pane view.
+    There were also some slight tweaks made to the data structure within Olive. 
+    Some cells have received updates, along with the addition of **include** cells, 
+    **module** cells, and sub-projects. 
     """
     tmd("olivemotd", recent_str)::Component{<:Any}
 end
@@ -107,7 +138,7 @@ include("UI.jl")
 ==#
 #==|||==#
 """
-### route ("/session") (main)
+### route ("/") (main)
 --------------------
 This is the function/Route which runs olive's "session" page, the main editor
     for olive. If you are providing this to a server directly with olive
@@ -121,12 +152,60 @@ it out. Endemic of future projects? **definitely**
 ```
 ```
 """
-main = route("/session") do c::Connection
+main = route("/") do c::Connection
+    args = getargs(c)
+    write!(c, script("nosave", text = """document.addEventListener('keydown', e => {
+        if (e.ctrlKey && e.key === 's') {
+            e.preventDefault();
+            }});"""))
+    if ~(:key in keys(args))
+        coverimg::Component{:img} = olive_cover()
+        olivecover = div("topdiv", align = "center")
+        logbutt = button("requestaccess", text = "request access")
+        on(c, logbutt, "click") do cm::ComponentModifier
+            c[:Logger].log(" someone is trying to login to olive! is this you?")
+            y = readline()
+            if y == "y"
+                c[:Logger].log(" okay, logging in as root.")
+                key = ToolipsSession.gen_ref(16)
+                push!(c[:OliveCore].client_keys[key] => c[:OliveCore].data["root"])
+                redirect!(cm, "/?key=$(key)")
+            end
+        end
+        push!(olivecover, coverimg,
+        h("mustconfirm", 2, text = "request access (no key)"), logbutt)
+        write!(c, olivecover)
+        return
+    end
+    if ~(args[:key] in keys(c[:OliveCore].client_keys))
+        write!(c, "bad key.")
+        return
+    end
+    uname = c[:OliveCore].client_keys[args[:key]]
+    if ~(getip(c) in keys(c[:OliveCore].names))
+        push!(c[:OliveCore].names, getip(c) => uname)
+    end
+    c[:OliveCore].names[getip(c)] = uname
+    envsearch = findfirst(e::Environment -> e.name == uname, c[:OliveCore].open)
+    if isnothing(envsearch)
+        cells = Vector{Cell}([Cell(1, "versioninfo", "")])
+        home_direc = Directory(c[:OliveCore].data["home"])
+        env::Environment = Environment(getname(c))
+        projdict::Dict{Symbol, Any} = Dict{Symbol, Any}(:cells => cells,
+        :path => home_direc.uri, :env => home_direc.uri, :pane => "one")
+        myproj::Project{<:Any} = Project{:olive}("release notes", projdict)
+        Base.invokelatest(c[:OliveCore].olmod.Olive.source_module!, myproj, home_direc.uri)
+        Base.invokelatest(c[:OliveCore].olmod.Olive.check!, myproj)
+        push!(env.directories, home_direc)
+        push!(env.projects, myproj)
+        push!(c[:OliveCore].open, env)
+    else
+        env = c[:OliveCore].open[getname(c)]
+    end
     # setup base env
     write!(c, olivesheet())
     c[:OliveCore].client_data[getname(c)]["selected"] = "session"
     olmod::Module = c[:OliveCore].olmod
-    proj_open::Project{<:Any} = c[:OliveCore].open[getname(c)]
     # setup base UI
     notifier::Component{:div} = olive_notific()
     ui_topbar::Component{:div} = topbar(c)
@@ -136,81 +215,56 @@ main = route("/session") do c::Connection
     ui_settings::Component{:section} = settings_menu(c)
     style!(ui_settings, "position" => "sticky")
     ui_explorer[:children] = Vector{Servable}([begin
-   Base.invokelatest(olmod.build, c, d, olmod, exp = true)
-    end for d in proj_open.directories])
-    olivemain::Component{:div} = olive_main(first(proj_open.open)[1])
-    style!(olivemain, "overflow-x" => "scroll", "position" => "relative",
+    Base.invokelatest(olmod.build, c, d, olmod, exp = true)
+    end for d in env.directories])
+    olivemain::Component{:div} = olive_main()
+    olivemain["pane"] = "2"
+    pane_one::Component{:section} = section("pane_one")
+    pane_one_tabs::Component{:div} = div("pane_one_tabs")
+    style!(pane_one_tabs, "display" => "inline", "padding" => 0px, "width" => 50percent)
+    pane_two_tabs::Component{:div} = div("pane_two_tabs")
+    style!(pane_two_tabs, "display" => "inline", "padding" => 0px, "width" => 50percent)
+    pane_container_one::Component{:div} = div("pane_container_one")
+    style!(pane_container_one, "width" => 100percent, "overflow" => "hidden", "display" => "inline-block",
+    "transition" => 1seconds)
+    pane_container_two::Component{:div} = div("pane_container_two")
+    style!(pane_container_two, "width" => 0percent, "overflow" => "hidden", "display" => "inline-block",
+    "opacity" => 0percent, "transition" => 1seconds)
+    on(c, pane_container_one, "click") do cm::ComponentModifier
+        cm[olivemain] = "pane" => "1"
+    end
+    pane_two::Component{:section} = section("pane_two")
+    on(c, pane_container_two, "click") do cm::ComponentModifier
+        cm[olivemain] = "pane" => "2"
+    end
+    style!(pane_one, "display" => "inline-block", "width" => 100percent, "overflow-y" => "scroll",
+    "overflow-x" => "hidden", "padding" => 0px, "max-height" => 100percent, "border-top-left-radius" => 0px, "border-top-right-radius" => 0px, 
+    "border-color" => "#333333")
+    style!(pane_two, "display" => "inline-block", "width" => 100percent, "overflow-y" => "scroll",
+    "overflow-x" => "hidden", "padding" => 0px, "max-height" => 100percent, "border-top-left-radius" => 0px, "border-top-right-radius" => 0px, 
+    "border-color" => "#333333")
+    push!(pane_container_one, pane_one_tabs, pane_one)
+    push!(pane_container_two, pane_two_tabs, pane_two)
+    push!(olivemain, pane_container_one, pane_container_two)
+    style!(olivemain, "overflow-x" => "hidden", "position" => "relative",
     "width" => 100percent, "overflow-y" => "hidden",
     "height" => 90percent, "display" => "inline-flex")
     bod = body("mainbody")
     style!(bod, "overflow" => "hidden")
     push!(bod, notifier,  ui_explorer, ui_topbar, ui_settings, olivemain)
-    script!(c, "load", type = "Timeout", time = 250) do cm::ComponentModifier
+    script!(c, "load", type = "Timeout") do cm::ComponentModifier
         load_extensions!(c, cm, olmod)
-        window::Component{:div} = Base.invokelatest(olmod.build, c,
-        cm, proj_open)
-        append!(cm, "olivemain", window)
-    end
-    write!(c, bod)
-end
-#==output[code]
-==#
-#==|||==#
-explorer = route("/") do c::Connection
-    args = getargs(c)
-    notifier::Component{:div} = olive_notific()
-    loader_body = div("loaderbody", align = "center")
-    style!(loader_body, "margin-top" => 10percent)
-    write!(c, olivesheet())
-    icon = olive_loadicon()
-    bod = body("mainbody")
-    if :key in keys(args)
-        if ~(args[:key] in keys(c[:OliveCore].client_keys))
-            write!(c, "bad key.")
-            return
-        end
-        uname = c[:OliveCore].client_keys[args[:key]]
-        if ~(getip(c) in keys(c[:OliveCore].names))
-            push!(c[:OliveCore].names, getip(c) => uname)
-        end
-        c[:OliveCore].names[getip(c)] = uname
-        c[:OliveCore].client_data[getname(c)]["selected"] = "files"
-        on(c, bod, "load") do cm::ComponentModifier
-            olmod = c[:OliveCore].olmod
-            homeproj = Directory(c[:OliveCore].data["home"], "root" => "rw")
-            workdir = Directory(c[:OliveCore].data["wd"], "all" => "rw")
-            dirs = [homeproj, workdir]
-            main = olive_main("files")
-            for dir in dirs
-                push!(main[:children], build(c, dir, olmod))
-            end
-            script!(c, cm, "loadcallback") do cm
-                style!(cm, icon, "opacity" => 0percent)
-                set_children!(cm, bod, [olivesheet(), notifier, main])
-            end
-            load_extensions!(c, cm, olmod)
-        end
-        push!(loader_body, icon)
-        push!(bod, loader_body)
-        write!(c, bod)
-        return
-    end
-    coverimg::Component{:img} = olive_cover()
-    olivecover = div("topdiv", align = "center")
-    logbutt = button("requestaccess", text = "request access")
-    on(c, logbutt, "click") do cm::ComponentModifier
-        c[:Logger].log(" someone is trying to login to olive! is this you?")
-        y = readline()
-        if y == "y"
-            c[:Logger].log(" okay, logging in as root.")
-            key = ToolipsSession.gen_ref(16)
-            push!(c[:OliveCore].client_keys[key] => c[:OliveCore].data["root"])
-            redirect!(cm, "/?key=$(key)")
+        [begin
+            window::Component{:div} = Base.invokelatest(olmod.build, c,
+            cm, proj)
+            append!(cm, "pane_$(proj.data[:pane])", window)
+            append!(cm, "pane_$(proj.data[:pane])_tabs", build_tab(c, proj))
+        end for proj in env.projects]
+        ToolipsSession.insert!(cm, "projectexplorer", 1, work_menu(c))
+        if length(env.projects) > 1
+            style!(cm, "pane_container_two", "width" => 100percent, "opacity" => 100percent)
         end
     end
-    push!(olivecover, coverimg,
-    h("mustconfirm", 2, text = "request access (no key)"), logbutt)
-    push!(bod, olivecover)
     write!(c, bod)
 end
  #==output[code]
@@ -226,7 +280,7 @@ to offering some examples.
  ```
  """
 devmode = route("/") do c::Connection
-    explorer.page(c)
+    
 end
 #==output[code]
 ==#
@@ -273,7 +327,7 @@ setup = route("/") do c::Connection
     style!(questions, "opacity" => 0percent, "transition" => 2seconds,
     "transform" => "translateY(50%)")
     push!(questions, h("questions-heading", 2, text = "a few more things ..."))
-    opts = [button("yes", text = "yes"), button("no", text = "no")]
+    opts = [button("no", text = "no"), button("yes", text = "yes")]
     push!(questions, h("questions-defaults", 4, text = "would you like to add OliveDefaults?"))
     push!(questions, p("defaults-explain", text = """this extension will give the
     capability to add custom styles, adds more cells, and more!"""))
@@ -315,7 +369,7 @@ setup = route("/") do c::Connection
                              write(o, cm["selector"]["text"])
                          end
                      end
-                     create_project(cm["selector"]["text"])
+                     create_project(replace(cm["selector"]["text"], "\\" => "/"))
                      config = TOML.parse(read(
                      "$(cm["selector"]["text"])/olive/Project.toml",String))
                      users = Dict{String, Any}(
@@ -338,6 +392,9 @@ setup = route("/") do c::Connection
                      txt = ""
                      if dfaults == "yes"
                          Pkg.add(
+                         url = "https://github.com/ChifiSource/Olive.jl"
+                         )
+                         Pkg.add(
                          url = "https://github.com/ChifiSource/OliveDefaults.jl"
                          )
                          txt = txt * "defaults loaded! "
@@ -352,7 +409,7 @@ setup = route("/") do c::Connection
                          direc = cm["selector"]["text"]
                          oc.data["home"] = "$direc/olive"
                          source_module!(oc)
-                         push!(c.routes, fourofour, main, explorer)
+                         push!(c.routes, fourofour, main)
                          unamekey = ToolipsSession.gen_ref(16)
                          push!(c[:OliveCore].client_keys, unamekey => username)
                          push!(c[:OliveCore].client_data,
@@ -468,7 +525,7 @@ The start function comprises routes into a Vector{Route} and then constructs
     a ServerTemplate before starting and returning the WebServer.
 """
 function start(IP::String = "127.0.0.1", PORT::Integer = 8000;
-    devmode::Bool = false)
+    devmode::Bool = false, homedirec::String = homedir())
     if devmode
         s = OliveServer(OliveCore("Dev"))
         s.start()
@@ -476,11 +533,14 @@ function start(IP::String = "127.0.0.1", PORT::Integer = 8000;
         return
     end
     srcdir = @__DIR__
-    homedirec::String = homedir()
     if isfile("$srcdir/home.txt")
         homedirec = read("$srcdir/home.txt", String)
     end
     oc::OliveCore = OliveCore("olive")
+    if Sys.iswindows()
+        homedirec = replace(homedirec, "\\" => "/")
+        println(homedirec)
+    end
     oc.data["home"] = homedirec
     oc.data["wd"] = pwd()
     rootname::String = ""
@@ -490,13 +550,14 @@ function start(IP::String = "127.0.0.1", PORT::Integer = 8000;
     else
         config = TOML.parse(read("$homedirec/olive/Project.toml", String))
         Pkg.activate("$homedirec/olive")
+        Pkg.instantiate()
         oc.data = config["olive"]
         rootname = oc.data["root"]
         oc.client_data = config["oliveusers"]
         oc.data["home"] = homedirec * "/olive"
         oc.data["wd"] = pwd()
         source_module!(oc)
-        rs = routes(fourofour, main, explorer, docbrowser, icons, mainicon)
+        rs = routes(fourofour, main, docbrowser, icons, mainicon)
     end
     server = WebServer(IP, PORT, routes = rs, extensions = [OliveLogger(),
     oc, Session(["/", "/session", "/doc"])])
